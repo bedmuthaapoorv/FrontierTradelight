@@ -1,52 +1,29 @@
 import os
-import re
 import subprocess
 import sys
-from datetime import datetime
 
 import pandas as pd
 import streamlit as st
 
 import backtest
+from constants import (
+    APP_DIR,
+    RULES_PATH,
+    REPORT_PATH,
+    BACKUP_DIR,
+    EXIT_RULES_PATH,
+    EXIT_BACKUP_DIR,
+    BACKTEST_TRADES_PATH,
+    BACKTEST_SUMMARY_PATH,
+    BACKTEST_PORTFOLIO_PATH,
+    BACKTEST_LOG_PATH,
+)
+from backup_utils import backup_markdown, list_backups
+import strings
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
-RULES_PATH = os.path.join(APP_DIR, "rules.md")
-REPORT_PATH = os.path.join(APP_DIR, "stock_report.csv")
-BACKUP_DIR = os.path.normpath(os.path.join(APP_DIR, "..", "Rules_backup"))
-EXIT_RULES_PATH = os.path.join(APP_DIR, "exit_rules.md")
-EXIT_BACKUP_DIR = os.path.normpath(os.path.join(APP_DIR, "..", "ExitRules_backup"))
-BACKTEST_TRADES_PATH = os.path.join(APP_DIR, "backtest_trades.csv")
-BACKTEST_SUMMARY_PATH = os.path.join(APP_DIR, "backtest_summary.csv")
-BACKTEST_PORTFOLIO_PATH = os.path.join(APP_DIR, "backtest_portfolio.csv")
-BACKTEST_LOG_PATH = os.path.join(APP_DIR, "backtest_run.log")
-
-
-def strategy_slug(content, name_field="Strategy Name"):
-    """Derive a filesystem-safe slug from a '<name_field>: ...' line, falling
-    back to a timestamp if the content doesn't declare one."""
-    match = re.search(rf"{re.escape(name_field)}:\s*(.+)", content)
-    name = match.group(1).strip() if match else ""
-    slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
-    return slug or datetime.now().strftime("%Y%m%d_%H%M%S")
-
-
-def backup_markdown(content, backup_dir, suffix, name_field="Strategy Name"):
-    """Save the given markdown content into backup_dir, keyed by the name
-    declared in name_field."""
-    os.makedirs(backup_dir, exist_ok=True)
-    filename = f"{strategy_slug(content, name_field=name_field)}_{suffix}.md"
-    with open(os.path.join(backup_dir, filename), "w", encoding="utf-8") as f:
-        f.write(content)
-    return filename
-
-
-def list_backups(backup_dir):
-    if not os.path.isdir(backup_dir):
-        return []
-    return sorted(f for f in os.listdir(backup_dir) if f.endswith(".md"))
-
-st.set_page_config(page_title="Stock Screener", layout="wide")
-st.title("Stock Screener")
+st.set_page_config(page_title="Frontier TradeLight", layout="wide")
+st.title("Frontier TradeLight")
+st.caption(strings.APP_DESCRIPTION)
 
 tab_rules, tab_run, tab_results, tab_backtest = st.tabs(["Rules", "Run", "Results", "Backtest"])
 
@@ -107,7 +84,7 @@ with tab_rules:
     st.subheader("Load a previous strategy")
     backups = list_backups(BACKUP_DIR)
     if not backups:
-        st.caption("No backups yet. Backups are created automatically whenever you save a changed rules.md.")
+        st.caption(strings.NO_RULES_BACKUPS_CAPTION)
     else:
         selected_backup = st.selectbox("Choose a backed-up strategy", backups)
         backup_path = os.path.join(BACKUP_DIR, selected_backup)
@@ -132,7 +109,7 @@ with tab_rules:
 
 with tab_run:
     st.subheader("Generate screening logic")
-    st.caption("Reads rules.md, calls Gemini, writes generated_rules.py. Requires GEMINI_API_KEY in .env.")
+    st.caption(strings.GENERATE_SCREENER_CAPTION)
     if st.button("Run generate_screener.py"):
         with st.spinner("Generating screening logic..."):
             code = run_script("generate_screener.py")
@@ -144,7 +121,7 @@ with tab_run:
     st.divider()
 
     st.subheader("Run the screener")
-    st.caption("Fetches the stock universe and price history, scores each stock, writes stock_report.csv.")
+    st.caption(strings.RUN_SCREENER_CAPTION)
     if st.button("Run stock_screener.py"):
         with st.spinner("Running screener..."):
             code = run_script("stock_screener.py")
@@ -190,12 +167,7 @@ def show_backtest_progress():
 
 with tab_backtest:
     st.subheader("Backtest the current strategy")
-    st.caption(
-        "Simulates generated_rules.py over a historical date range using the exit "
-        "logic in generated_exit_strategy.py. On each signal, opens a flat Rs.100 "
-        "trade at the next trading day's open, holds until your exit strategy "
-        "triggers, or force-exits at the range's last close if it never does."
-    )
+    st.caption(strings.BACKTEST_TAB_CAPTION)
 
     backtest_guide_path = os.path.join(APP_DIR, "BACKTEST_GUIDE.md")
     if os.path.exists(backtest_guide_path):
@@ -204,12 +176,7 @@ with tab_backtest:
                 st.markdown(f.read())
 
     st.subheader("Exit strategy")
-    st.caption(
-        "Define your exit strategy in exit_rules.md, then generate it - the same "
-        "way rules.md drives generated_rules.py. Write your own logic here (fixed "
-        "SL/TP, trailing ATR, time-based, anything computable from OHLCV) instead "
-        "of picking from a fixed list of built-in options."
-    )
+    st.caption(strings.EXIT_STRATEGY_CAPTION)
 
     if "exit_rules_content" not in st.session_state:
         with open(EXIT_RULES_PATH, "r", encoding="utf-8") as f:
@@ -248,7 +215,7 @@ with tab_backtest:
     with st.expander("Load a previous exit strategy"):
         exit_backups = list_backups(EXIT_BACKUP_DIR)
         if not exit_backups:
-            st.caption("No backups yet. Backups are created automatically whenever you save a changed exit_rules.md.")
+            st.caption(strings.NO_EXIT_BACKUPS_CAPTION)
         else:
             selected_exit_backup = st.selectbox("Choose a backed-up exit strategy", exit_backups)
             exit_backup_path = os.path.join(EXIT_BACKUP_DIR, selected_exit_backup)
@@ -284,19 +251,9 @@ with tab_backtest:
     with col4:
         max_positions = st.number_input("Max concurrent positions", min_value=1, value=10, step=1)
 
-    st.caption(
-        "Signals compete for a fixed number of position slots, sized as an equal "
-        "share of current total equity (so position size compounds with growth). "
-        "When more signals fire on a day than there are free slots, the highest "
-        "ClosenessScore gets priority; the rest are skipped for lack of capital, "
-        "not opened at a smaller size."
-    )
+    st.caption(strings.POSITION_SLOTS_CAPTION)
 
-    st.caption(
-        "First run for a given date range fetches history from NSE and caches it in "
-        "backtest_cache/; later runs over the same range reuse that cache regardless "
-        "of exit strategy changes."
-    )
+    st.caption(strings.CACHE_CAPTION)
 
     is_running = st.session_state.get("backtest_running", False)
 
@@ -350,7 +307,7 @@ with tab_backtest:
         if process is not None and process.poll() is None:
             process.terminate()
         st.session_state.backtest_running = False
-        st.warning("Backtest stopped. Partial progress is lost — results/CSVs are only written when a run finishes.")
+        st.warning(strings.BACKTEST_STOPPED_WARNING)
 
     if is_running:
         show_backtest_progress()
@@ -381,20 +338,15 @@ with tab_backtest:
 
                 m1, m2, m3, m4, m5 = st.columns(5)
                 m1.metric("Final equity", f"Rs.{final_equity:,.0f}", f"{total_return_pct:+.2f}% total")
-                m2.metric("CAGR", cagr_display, help="Compound annual growth rate - the total return spread evenly across years, so it's comparable to things like FD/index annual returns rather than a lump 3-year figure.")
-                m3.metric("Max drawdown", f"{max_dd_pct:.1f}%", help="Largest peak-to-trough drop in equity during the run. A high CAGR next to a deep drawdown means the return came with real pain along the way, not steady compounding.")
+                m2.metric("CAGR", cagr_display, help=strings.CAGR_HELP)
+                m3.metric("Max drawdown", f"{max_dd_pct:.1f}%", help=strings.MAX_DRAWDOWN_HELP)
                 m4.metric("Funded trades", funded_count)
                 m5.metric("Skipped (no capital)", skipped_count)
 
                 st.line_chart(portfolio_df.set_index("Date")["Equity"])
 
                 with st.expander("Year-by-year breakdown"):
-                    st.caption(
-                        "A single CAGR over a multi-year range can hide a lot - a return "
-                        "dominated by one exceptional year looks the same in that headline "
-                        "number as one built from steady, repeatable years. Check here "
-                        "before trusting the CAGR above as a forward expectation."
-                    )
+                    st.caption(strings.YEARLY_BREAKDOWN_CAPTION)
                     yearly_df = portfolio_df.copy()
                     yearly_df["Year"] = yearly_df["Date"].dt.year
                     yearly = yearly_df.groupby("Year")["Equity"].agg(["first", "last"])
