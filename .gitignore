@@ -19,6 +19,7 @@ Thumbs.db
 # Editor / agent tooling
 .claude/
 .agents/
+.idea/
 
 # Generated data / logs
 Strategies/Default/stock_report.csv
