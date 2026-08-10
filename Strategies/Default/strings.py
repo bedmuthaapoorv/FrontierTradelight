@@ -74,6 +74,21 @@ YEARLY_BREAKDOWN_CAPTION = (
     "trusting the CAGR above as a forward expectation."
 )
 
+SELL_TAB_CAPTION = (
+    "Runs the exit logic in generated_exit_strategy.py against the stocks "
+    "you currently hold, using live price data - the sell-side mirror of "
+    "the Run tab's screener. For each holding, checks whether your exit "
+    "strategy would already have fired between your entry date and today."
+)
+
+HOLDINGS_EDITOR_CAPTION = (
+    "Add each open position below (symbol, entry price, entry date), then "
+    "run the check. Holdings are saved to holdings.csv as you edit, so they "
+    "persist across sessions - remove a row once you've sold that position."
+)
+
+NO_HOLDINGS_CAPTION = "Add at least one holding above before checking exit signals."
+
 BACKTEST_STOPPED_WARNING = (
     "Backtest stopped. Partial progress is lost — results/CSVs are only "
     "written when a run finishes."

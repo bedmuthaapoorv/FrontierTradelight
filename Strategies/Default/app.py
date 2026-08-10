@@ -17,6 +17,8 @@ from constants import (
     BACKTEST_SUMMARY_PATH,
     BACKTEST_PORTFOLIO_PATH,
     BACKTEST_LOG_PATH,
+    HOLDINGS_PATH,
+    SELL_REPORT_PATH,
 )
 from backup_utils import backup_markdown, list_backups
 import strings
@@ -25,7 +27,9 @@ st.set_page_config(page_title="Frontier TradeLight", layout="wide")
 st.title("Frontier TradeLight")
 st.caption(strings.APP_DESCRIPTION)
 
-tab_rules, tab_run, tab_results, tab_backtest = st.tabs(["Rules", "Run", "Results", "Backtest"])
+tab_rules, tab_run, tab_results, tab_sell, tab_backtest = st.tabs(
+    ["Rules", "Run", "Results", "Sell", "Backtest"]
+)
 
 
 def read_text(path):
@@ -211,6 +215,65 @@ with tab_results:
                 df = df[df["Passed"] == True]
         st.dataframe(df, use_container_width=True)
         st.caption(f"{len(df)} rows")
+
+with tab_sell:
+    st.subheader("Check your holdings against the exit strategy")
+    st.caption(strings.SELL_TAB_CAPTION)
+    st.caption(strings.HOLDINGS_EDITOR_CAPTION)
+
+    if "holdings_df" not in st.session_state:
+        if os.path.exists(HOLDINGS_PATH):
+            st.session_state.holdings_df = pd.read_csv(HOLDINGS_PATH, parse_dates=["EntryDate"])
+        else:
+            st.session_state.holdings_df = pd.DataFrame(
+                columns=["Symbol", "EntryPrice", "EntryDate"]
+            )
+
+    holdings_editor = st.data_editor(
+        st.session_state.holdings_df,
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "Symbol": st.column_config.TextColumn(required=True),
+            "EntryPrice": st.column_config.NumberColumn(required=True, min_value=0.0),
+            "EntryDate": st.column_config.DateColumn(required=True),
+        },
+        key="holdings_editor",
+    )
+
+    holdings_ready = holdings_editor.dropna(subset=["Symbol", "EntryPrice", "EntryDate"])
+
+    if not holdings_editor.equals(st.session_state.holdings_df):
+        holdings_ready.to_csv(HOLDINGS_PATH, index=False)
+        st.session_state.holdings_df = holdings_editor
+
+    if st.button("Check exit signals", disabled=holdings_ready.empty):
+        with st.spinner("Checking exit signals..."):
+            code = run_script("sell_screener.py", ["--holdings", HOLDINGS_PATH, "--out", SELL_REPORT_PATH])
+        if code == 0:
+            st.success("Sell check complete.")
+        else:
+            st.error(f"sell_screener.py exited with code {code}.")
+
+    if holdings_ready.empty:
+        st.caption(strings.NO_HOLDINGS_CAPTION)
+
+    if nonempty_csv_exists(SELL_REPORT_PATH):
+        st.divider()
+        st.subheader("Recommendations")
+        try:
+            sell_df = pd.read_csv(SELL_REPORT_PATH)
+
+            def highlight_recommendation(row):
+                color = {"SELL": "#ffcccc", "HOLD": "#ccffcc"}.get(row["Recommendation"], "")
+                return [f"background-color: {color}"] * len(row)
+
+            st.dataframe(
+                sell_df.style.apply(highlight_recommendation, axis=1),
+                use_container_width=True,
+            )
+        except pd.errors.EmptyDataError:
+            st.caption("No results from the last check.")
 
 @st.fragment(run_every=2)
 def show_backtest_progress():
