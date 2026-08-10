@@ -28,6 +28,16 @@ st.caption(strings.APP_DESCRIPTION)
 tab_rules, tab_run, tab_results, tab_backtest = st.tabs(["Rules", "Run", "Results", "Backtest"])
 
 
+def read_text(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def write_text(path, content):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
 def run_script(script_name, args=None):
     """Run a script in Default/ and stream its output."""
     process = subprocess.Popen(
@@ -47,88 +57,147 @@ def run_script(script_name, args=None):
     return process.returncode
 
 
-with tab_rules:
-    st.subheader("Edit rules.md")
+def run_script_with_feedback(button_label, script_name, spinner_text, success_text):
+    if st.button(button_label):
+        with st.spinner(spinner_text):
+            code = run_script(script_name)
+        if code == 0:
+            st.success(success_text)
+        else:
+            st.error(f"{script_name} exited with code {code}.")
 
-    guide_path = os.path.join(APP_DIR, "RULES_GUIDE.md")
+
+def show_guide(filename, expander_label):
+    guide_path = os.path.join(APP_DIR, filename)
     if os.path.exists(guide_path):
-        with st.expander("New to rules.md? Read the guide"):
-            with open(guide_path, "r", encoding="utf-8") as f:
-                st.markdown(f.read())
+        with st.expander(expander_label):
+            st.markdown(read_text(guide_path))
 
-    if "rules_content" not in st.session_state:
-        with open(RULES_PATH, "r", encoding="utf-8") as f:
-            st.session_state.rules_content = f.read()
+
+def nonempty_csv_exists(path):
+    return os.path.exists(path) and os.path.getsize(path) > 0
+
+
+def load_into_session(session_key, path):
+    if session_key not in st.session_state:
+        st.session_state[session_key] = read_text(path)
+
+
+def save_with_backup(path, backup_dir, suffix, backup_label, new_content, session_key):
+    """Back up the file's current contents, then overwrite it with new_content."""
+    previous_content = read_text(path)
+    if previous_content.strip():
+        backup_name = backup_markdown(previous_content, backup_dir, suffix)
+        st.info(f"Backed up previous {os.path.basename(path)} to {backup_label}/{backup_name}")
+
+    write_text(path, new_content)
+    st.session_state[session_key] = new_content
+
+
+def strategy_editor(*, session_key, path, guide_filename, guide_label, backup_dir,
+                     backup_suffix, backup_label, text_area_label, text_area_height,
+                     save_button_label, save_success_message, no_backups_caption):
+    """Renders the edit/save/restore workflow shared by rules.md and exit_rules.md."""
+    show_guide(guide_filename, guide_label)
+    load_into_session(session_key, path)
 
     edited = st.text_area(
-        "Strategy rules",
-        value=st.session_state.rules_content,
-        height=600,
+        text_area_label,
+        value=st.session_state[session_key],
+        height=text_area_height,
         label_visibility="collapsed",
     )
 
-    if st.button("Save rules.md"):
-        with open(RULES_PATH, "r", encoding="utf-8") as f:
-            previous_content = f.read()
-        if previous_content.strip():
-            backup_name = backup_markdown(previous_content, BACKUP_DIR, "rules")
-            st.info(f"Backed up previous rules.md to Rules_backup/{backup_name}")
+    if st.button(save_button_label):
+        save_with_backup(path, backup_dir, backup_suffix, backup_label, edited, session_key)
+        st.success(save_success_message)
 
-        with open(RULES_PATH, "w", encoding="utf-8") as f:
-            f.write(edited)
-        st.session_state.rules_content = edited
-        st.success("Saved rules.md")
+    return edited
+
+
+def backup_restore_section(*, path, backup_dir, backup_suffix, backup_label,
+                            session_key, no_backups_caption, selectbox_label,
+                            overwrite_label_prefix, success_message_prefix,
+                            show_in_expander=False):
+    backups = list_backups(backup_dir)
+    if not backups:
+        st.caption(no_backups_caption)
+        return
+
+    selected_backup = st.selectbox(selectbox_label, backups)
+    backup_content = read_text(os.path.join(backup_dir, selected_backup))
+
+    if show_in_expander:
+        st.code(backup_content, language="markdown")
+    else:
+        with st.expander(f"Preview {selected_backup}"):
+            st.code(backup_content, language="markdown")
+
+    if st.button(f"{overwrite_label_prefix} {selected_backup}"):
+        current_content = read_text(path)
+        if current_content.strip() and current_content != backup_content:
+            backup_name = backup_markdown(current_content, backup_dir, backup_suffix)
+            st.info(f"Backed up previous {os.path.basename(path)} to {backup_label}/{backup_name}")
+
+        write_text(path, backup_content)
+        st.session_state[session_key] = backup_content
+        st.success(f"{success_message_prefix} {selected_backup}")
+        st.rerun()
+
+
+with tab_rules:
+    st.subheader("Edit rules.md")
+
+    strategy_editor(
+        session_key="rules_content",
+        path=RULES_PATH,
+        guide_filename="RULES_GUIDE.md",
+        guide_label="New to rules.md? Read the guide",
+        backup_dir=BACKUP_DIR,
+        backup_suffix="rules",
+        backup_label="Rules_backup",
+        text_area_label="Strategy rules",
+        text_area_height=600,
+        save_button_label="Save rules.md",
+        save_success_message="Saved rules.md",
+        no_backups_caption=strings.NO_RULES_BACKUPS_CAPTION,
+    )
 
     st.divider()
 
     st.subheader("Load a previous strategy")
-    backups = list_backups(BACKUP_DIR)
-    if not backups:
-        st.caption(strings.NO_RULES_BACKUPS_CAPTION)
-    else:
-        selected_backup = st.selectbox("Choose a backed-up strategy", backups)
-        backup_path = os.path.join(BACKUP_DIR, selected_backup)
-        with open(backup_path, "r", encoding="utf-8") as f:
-            backup_content = f.read()
-
-        with st.expander(f"Preview {selected_backup}"):
-            st.code(backup_content, language="markdown")
-
-        if st.button(f"Overwrite rules.md with {selected_backup}"):
-            with open(RULES_PATH, "r", encoding="utf-8") as f:
-                current_content = f.read()
-            if current_content.strip() and current_content != backup_content:
-                backup_name = backup_markdown(current_content, BACKUP_DIR, "rules")
-                st.info(f"Backed up previous rules.md to Rules_backup/{backup_name}")
-
-            with open(RULES_PATH, "w", encoding="utf-8") as f:
-                f.write(backup_content)
-            st.session_state.rules_content = backup_content
-            st.success(f"rules.md overwritten with {selected_backup}")
-            st.rerun()
+    backup_restore_section(
+        path=RULES_PATH,
+        backup_dir=BACKUP_DIR,
+        backup_suffix="rules",
+        backup_label="Rules_backup",
+        session_key="rules_content",
+        no_backups_caption=strings.NO_RULES_BACKUPS_CAPTION,
+        selectbox_label="Choose a backed-up strategy",
+        overwrite_label_prefix="Overwrite rules.md with",
+        success_message_prefix="rules.md overwritten with",
+    )
 
 with tab_run:
     st.subheader("Generate screening logic")
     st.caption(strings.GENERATE_SCREENER_CAPTION)
-    if st.button("Run generate_screener.py"):
-        with st.spinner("Generating screening logic..."):
-            code = run_script("generate_screener.py")
-        if code == 0:
-            st.success("generated_rules.py updated.")
-        else:
-            st.error(f"generate_screener.py exited with code {code}.")
+    run_script_with_feedback(
+        "Run generate_screener.py",
+        "generate_screener.py",
+        "Generating screening logic...",
+        "generated_rules.py updated.",
+    )
 
     st.divider()
 
     st.subheader("Run the screener")
     st.caption(strings.RUN_SCREENER_CAPTION)
-    if st.button("Run stock_screener.py"):
-        with st.spinner("Running screener..."):
-            code = run_script("stock_screener.py")
-        if code == 0:
-            st.success("stock_report.csv updated. See the Results tab.")
-        else:
-            st.error(f"stock_screener.py exited with code {code}.")
+    run_script_with_feedback(
+        "Run stock_screener.py",
+        "stock_screener.py",
+        "Running screener...",
+        "stock_report.csv updated. See the Results tab.",
+    )
 
 with tab_results:
     st.subheader("stock_report.csv")
@@ -152,9 +221,7 @@ def show_backtest_progress():
         return
 
     if os.path.exists(BACKTEST_LOG_PATH):
-        with open(BACKTEST_LOG_PATH, "r", encoding="utf-8") as f:
-            log_content = f.read()
-        st.code(log_content[-3000:] or "Starting...")
+        st.code(read_text(BACKTEST_LOG_PATH)[-3000:] or "Starting...")
 
     if process.poll() is not None:
         st.session_state.backtest_running = False
@@ -169,18 +236,12 @@ with tab_backtest:
     st.subheader("Backtest the current strategy")
     st.caption(strings.BACKTEST_TAB_CAPTION)
 
-    backtest_guide_path = os.path.join(APP_DIR, "BACKTEST_GUIDE.md")
-    if os.path.exists(backtest_guide_path):
-        with st.expander("New to backtesting? Read the guide"):
-            with open(backtest_guide_path, "r", encoding="utf-8") as f:
-                st.markdown(f.read())
+    show_guide("BACKTEST_GUIDE.md", "New to backtesting? Read the guide")
 
     st.subheader("Exit strategy")
     st.caption(strings.EXIT_STRATEGY_CAPTION)
 
-    if "exit_rules_content" not in st.session_state:
-        with open(EXIT_RULES_PATH, "r", encoding="utf-8") as f:
-            st.session_state.exit_rules_content = f.read()
+    load_into_session("exit_rules_content", EXIT_RULES_PATH)
 
     edited_exit_rules = st.text_area(
         "Exit strategy rules",
@@ -192,50 +253,33 @@ with tab_backtest:
     exit_save_col, exit_gen_col = st.columns(2)
     with exit_save_col:
         if st.button("Save exit_rules.md"):
-            with open(EXIT_RULES_PATH, "r", encoding="utf-8") as f:
-                previous_content = f.read()
-            if previous_content.strip():
-                backup_name = backup_markdown(previous_content, EXIT_BACKUP_DIR, "exit_rules")
-                st.info(f"Backed up previous exit_rules.md to ExitRules_backup/{backup_name}")
-
-            with open(EXIT_RULES_PATH, "w", encoding="utf-8") as f:
-                f.write(edited_exit_rules)
-            st.session_state.exit_rules_content = edited_exit_rules
+            save_with_backup(
+                EXIT_RULES_PATH, EXIT_BACKUP_DIR, "exit_rules", "ExitRules_backup",
+                edited_exit_rules, "exit_rules_content",
+            )
             st.success("Saved exit_rules.md")
 
     with exit_gen_col:
-        if st.button("Generate exit strategy"):
-            with st.spinner("Generating exit logic..."):
-                code = run_script("generate_exit_strategy.py")
-            if code == 0:
-                st.success("generated_exit_strategy.py updated.")
-            else:
-                st.error(f"generate_exit_strategy.py exited with code {code}.")
+        run_script_with_feedback(
+            "Generate exit strategy",
+            "generate_exit_strategy.py",
+            "Generating exit logic...",
+            "generated_exit_strategy.py updated.",
+        )
 
     with st.expander("Load a previous exit strategy"):
-        exit_backups = list_backups(EXIT_BACKUP_DIR)
-        if not exit_backups:
-            st.caption(strings.NO_EXIT_BACKUPS_CAPTION)
-        else:
-            selected_exit_backup = st.selectbox("Choose a backed-up exit strategy", exit_backups)
-            exit_backup_path = os.path.join(EXIT_BACKUP_DIR, selected_exit_backup)
-            with open(exit_backup_path, "r", encoding="utf-8") as f:
-                exit_backup_content = f.read()
-
-            st.code(exit_backup_content, language="markdown")
-
-            if st.button(f"Overwrite exit_rules.md with {selected_exit_backup}"):
-                with open(EXIT_RULES_PATH, "r", encoding="utf-8") as f:
-                    current_content = f.read()
-                if current_content.strip() and current_content != exit_backup_content:
-                    backup_name = backup_markdown(current_content, EXIT_BACKUP_DIR, "exit_rules")
-                    st.info(f"Backed up previous exit_rules.md to ExitRules_backup/{backup_name}")
-
-                with open(EXIT_RULES_PATH, "w", encoding="utf-8") as f:
-                    f.write(exit_backup_content)
-                st.session_state.exit_rules_content = exit_backup_content
-                st.success(f"exit_rules.md overwritten with {selected_exit_backup}")
-                st.rerun()
+        backup_restore_section(
+            path=EXIT_RULES_PATH,
+            backup_dir=EXIT_BACKUP_DIR,
+            backup_suffix="exit_rules",
+            backup_label="ExitRules_backup",
+            session_key="exit_rules_content",
+            no_backups_caption=strings.NO_EXIT_BACKUPS_CAPTION,
+            selectbox_label="Choose a backed-up exit strategy",
+            overwrite_label_prefix="Overwrite exit_rules.md with",
+            success_message_prefix="exit_rules.md overwritten with",
+            show_in_expander=True,
+        )
 
     st.divider()
 
@@ -291,13 +335,13 @@ with tab_backtest:
                 "--max-positions", str(int(max_positions)),
             ]
 
-            log_file = open(BACKTEST_LOG_PATH, "w")
-            process = subprocess.Popen(
-                [sys.executable, "backtest.py", *args],
-                cwd=APP_DIR,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-            )
+            with open(BACKTEST_LOG_PATH, "w", encoding="utf-8") as log_file:
+                process = subprocess.Popen(
+                    [sys.executable, "backtest.py", *args],
+                    cwd=APP_DIR,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                )
             st.session_state.backtest_process = process
             st.session_state.backtest_running = True
             st.rerun()
@@ -312,7 +356,7 @@ with tab_backtest:
     if is_running:
         show_backtest_progress()
 
-    if os.path.exists(BACKTEST_PORTFOLIO_PATH) and os.path.getsize(BACKTEST_PORTFOLIO_PATH) > 0:
+    if nonempty_csv_exists(BACKTEST_PORTFOLIO_PATH):
         st.divider()
         st.subheader("Portfolio result")
         try:
@@ -359,7 +403,7 @@ with tab_backtest:
         except pd.errors.EmptyDataError:
             st.caption("No portfolio data from the last run.")
 
-    if os.path.exists(BACKTEST_SUMMARY_PATH) and os.path.getsize(BACKTEST_SUMMARY_PATH) > 0:
+    if nonempty_csv_exists(BACKTEST_SUMMARY_PATH):
         st.divider()
         st.subheader("Summary by ClosenessScore bucket")
         try:
@@ -367,7 +411,7 @@ with tab_backtest:
         except pd.errors.EmptyDataError:
             st.caption("No trades were simulated in the last run, so there's no summary to bucket.")
 
-    if os.path.exists(BACKTEST_TRADES_PATH) and os.path.getsize(BACKTEST_TRADES_PATH) > 0:
+    if nonempty_csv_exists(BACKTEST_TRADES_PATH):
         st.subheader("Individual trades")
         try:
             st.dataframe(pd.read_csv(BACKTEST_TRADES_PATH), use_container_width=True)
