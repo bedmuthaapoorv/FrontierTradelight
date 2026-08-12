@@ -183,8 +183,11 @@ total return, funded vs. skipped-for-lack-of-capital trade counts).
   current entry strategy (worked example).
 - [`Strategies/Default/exit_rules.md`](Strategies/Default/exit_rules.md) —
   the current exit strategy (worked example).
+- [`Strategies/Default/PLUGIN_GUIDE.md`](Strategies/Default/PLUGIN_GUIDE.md) —
+  how to add a new tab to the UI as a self-contained plugin.
 - Prior strategy versions — auto-saved whenever you save a changed
-  `rules.md` / `exit_rules.md` (restorable from the UI's Backtest tab):
+  `rules.md` (restorable from the UI's Rules tab) or `exit_rules.md`
+  (restorable from the UI's Sell tab):
   - [`Strategies/Rules_backup/trendline_rules.md`](Strategies/Rules_backup/trendline_rules.md)
   - [`Strategies/Rules_backup/trendline_support_momentum_rules.md`](Strategies/Rules_backup/trendline_support_momentum_rules.md)
   - [`Strategies/Rules_backup/mean_reversion_rules.md`](Strategies/Rules_backup/mean_reversion_rules.md)
