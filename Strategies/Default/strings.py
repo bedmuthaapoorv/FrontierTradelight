@@ -29,6 +29,12 @@ BACKTEST_TAB_CAPTION = (
     "triggers, or force-exits at the range's last close if it never does."
 )
 
+EXIT_STRATEGY_ELSEWHERE_CAPTION = (
+    "Edit exit_rules.md from the Sell tab - it drives both this backtest "
+    "and the live holdings check, and editing it there keeps it next to "
+    "the decision it's actually used for."
+)
+
 EXIT_STRATEGY_CAPTION = (
     "Define your exit strategy in exit_rules.md, then generate it - the same "
     "way rules.md drives generated_rules.py. Write your own logic here (fixed "
@@ -76,9 +82,12 @@ YEARLY_BREAKDOWN_CAPTION = (
 
 SELL_TAB_CAPTION = (
     "Runs the exit logic in generated_exit_strategy.py against the stocks "
-    "you currently hold, using live price data - the sell-side mirror of "
-    "the Run tab's screener. For each holding, checks whether your exit "
-    "strategy would already have fired between your entry date and today."
+    "you currently hold - the sell-side mirror of the Run tab's screener. "
+    "For each holding, checks whether your exit strategy would already "
+    "have fired between your entry date and today. Price history comes "
+    "from NSE's own data feed, which only has up to yesterday's official "
+    "close available (no live/intraday feed) - fill in Current Price below "
+    "per holding to check against today's live price instead."
 )
 
 HOLDINGS_EDITOR_CAPTION = (
@@ -88,6 +97,13 @@ HOLDINGS_EDITOR_CAPTION = (
 )
 
 NO_HOLDINGS_CAPTION = "Add at least one holding above before checking exit signals."
+
+CURRENT_PRICE_HELP = (
+    "Optional. NSE's own data feed only has yesterday's close available "
+    "(see the caption above) - paste today's LTP from your broker app here "
+    "to fold in a live price instead. Leave blank to fall back to the last "
+    "published close."
+)
 
 BACKTEST_STOPPED_WARNING = (
     "Backtest stopped. Partial progress is lost — results/CSVs are only "
