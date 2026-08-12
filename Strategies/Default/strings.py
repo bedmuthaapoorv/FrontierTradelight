@@ -67,6 +67,19 @@ CAGR_HELP = (
     "than a lump 3-year figure."
 )
 
+INFLATION_ADJUSTED_HELP = (
+    "Deflates the equity curve using India's actual annual CPI inflation "
+    "rate (World Bank data) for each calendar year the backtest spans - "
+    "shows what your returns are worth in today's purchasing power, not "
+    "just nominal rupees."
+)
+
+INFLATION_FETCH_ERROR = (
+    "Couldn't fetch India's CPI inflation data from the World Bank API "
+    "(no internet access, or the request failed) - showing nominal "
+    "results only."
+)
+
 MAX_DRAWDOWN_HELP = (
     "Largest peak-to-trough drop in equity during the run. A high CAGR next "
     "to a deep drawdown means the return came with real pain along the way, "
