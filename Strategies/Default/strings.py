@@ -122,3 +122,31 @@ BACKTEST_STOPPED_WARNING = (
     "Backtest stopped. Partial progress is lost — results/CSVs are only "
     "written when a run finishes."
 )
+
+NEAR_MISS_HOLDING_DAYS = 20
+
+MISSED_OPPORTUNITIES_CAPTION = (
+    "Every day the backtest evaluates a stock, a stock that fails exactly "
+    "one rule is logged as a near-miss along with what a simple "
+    f"{NEAR_MISS_HOLDING_DAYS}-trading-day hold from the next day's open "
+    "would have returned. This is not a trade the strategy took - it's "
+    "what the rule that blocked it cost you, so you can see which filters "
+    "are worth loosening instead of guessing."
+)
+
+NO_NEAR_MISSES_INFO = (
+    "No near-miss data yet. Run a backtest from the Backtest tab first - "
+    "near_misses.csv is written alongside the trade results."
+)
+
+RULE_BREAKDOWN_CAPTION = (
+    "Sorted by average forward return, highest first. A rule near the top "
+    "with a return and win rate clearly better than your realized trades "
+    "is likely too tight - try loosening its threshold in rules.md and "
+    "rerunning the backtest to confirm."
+)
+
+TOP_NEAR_MISSES_CAPTION = (
+    "The single biggest near-misses across all rules - concrete examples "
+    "of what got away, not just the aggregate stats above."
+)
