@@ -16,7 +16,7 @@ rules.md       --(Gemini)-->  generated_rules.py        --(used by)-->  stock_sc
 exit_rules.md  --(Gemini)-->  generated_exit_strategy.py  ---------+-->  backtest.py --> backtest_trades.csv
                                                                   /                   --> backtest_summary.csv
                                               universe_fetcher.py                    --> backtest_portfolio.csv
-                                       (Nifty 50 + sector + market-breadth data, cached)
+                                       (Nifty 100 + sector + market-breadth data, cached)
 ```
 
 - **`rules.md`** — the entry strategy spec: mandatory filters, rejection
@@ -44,7 +44,7 @@ exit_rules.md  --(Gemini)-->  generated_exit_strategy.py  ---------+-->  backtes
   `backtest.py`. `backtest.py` itself (not this file) always force-closes
   any still-open trade at the end of the backtest's date range, so a
   regenerated exit strategy can never leave a trade open forever.
-- **`universe_fetcher.py`** — downloads the Nifty 50 constituent list from
+- **`universe_fetcher.py`** — downloads the Nifty 100 constituent list from
   NSE, pulls price history via `jugaad-data`, ranks stocks by sector
   performance, and returns the top N stocks per sector. Results are cached
   in `universe_cache.json` for 1 day.
@@ -188,8 +188,10 @@ total return, funded vs. skipped-for-lack-of-capital trade counts).
 - Prior strategy versions — auto-saved whenever you save a changed
   `rules.md` (restorable from the UI's Rules tab) or `exit_rules.md`
   (restorable from the UI's Sell tab):
-  - [`Strategies/Rules_backup/trendline_rules.md`](Strategies/Rules_backup/trendline_rules.md)
-  - [`Strategies/Rules_backup/trendline_support_momentum_rules.md`](Strategies/Rules_backup/trendline_support_momentum_rules.md)
+  - [`Strategies/Rules_backup/trendline_bounce_confirmation_v1_rules.md`](Strategies/Rules_backup/trendline_bounce_confirmation_v1_rules.md) —
+    real pivot-low trendline detection + bounce confirmation; the earlier
+    trendline strategy (placeholder trendline logic, no confirmation
+    trigger) has been removed as superseded.
   - [`Strategies/Rules_backup/mean_reversion_rules.md`](Strategies/Rules_backup/mean_reversion_rules.md)
   - [`Strategies/Rules_backup/oversold_mean_reversion_rules.md`](Strategies/Rules_backup/oversold_mean_reversion_rules.md)
   - [`Strategies/ExitRules_backup/fixed_stop_loss_take_profit_exit_rules.md`](Strategies/ExitRules_backup/fixed_stop_loss_take_profit_exit_rules.md)
@@ -214,7 +216,7 @@ total return, funded vs. skipped-for-lack-of-capital trade counts).
 - Backtest "total return" is cumulative over the whole date range, not
   annualized — check the accompanying CAGR figure before judging a result
   as strong or weak.
-- The backtest uses *today's* Nifty 50 constituent list applied
+- The backtest uses *today's* Nifty 100 constituent list applied
   retroactively (survivorship bias), and doesn't model slippage or
   brokerage/STT costs.
 - Never commit your real `.env` file or API key.

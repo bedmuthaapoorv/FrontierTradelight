@@ -80,6 +80,25 @@ INFLATION_FETCH_ERROR = (
     "results only."
 )
 
+NIFTY_COMPARISON_HELP = (
+    "Overlays what your starting capital would be worth spread equally "
+    "across the Nifty 50 constituents over the same period - a buy-and-hold "
+    "benchmark to judge whether the strategy actually beat just holding the "
+    "index."
+)
+
+NIFTY_COMPARISON_CAPTION = (
+    "NSE's official index-history data isn't reachable from here, so this "
+    "is an equal-weighted proxy built from the 50 constituent stocks' own "
+    "daily closes, not the real weighted Nifty 50 index level - directionally "
+    "representative, not exact."
+)
+
+NIFTY_FETCH_ERROR = (
+    "Couldn't build the Nifty 50 comparison (constituent list or price data "
+    "unavailable) - showing your portfolio only."
+)
+
 MAX_DRAWDOWN_HELP = (
     "Largest peak-to-trough drop in equity during the run. A high CAGR next "
     "to a deep drawdown means the return came with real pain along the way, "
@@ -90,7 +109,9 @@ YEARLY_BREAKDOWN_CAPTION = (
     "A single CAGR over a multi-year range can hide a lot - a return "
     "dominated by one exceptional year looks the same in that headline "
     "number as one built from steady, repeatable years. Check here before "
-    "trusting the CAGR above as a forward expectation."
+    "trusting the CAGR above as a forward expectation. For an interactive "
+    "version - toggle years on/off and see the CAGR recompute live - see "
+    "the **Deep Dive** tab."
 )
 
 SELL_TAB_CAPTION = (
@@ -149,4 +170,57 @@ RULE_BREAKDOWN_CAPTION = (
 TOP_NEAR_MISSES_CAPTION = (
     "The single biggest near-misses across all rules - concrete examples "
     "of what got away, not just the aggregate stats above."
+)
+
+DEEP_DIVE_CAPTION = (
+    "A single CAGR over a multi-year backtest can be carried almost "
+    "entirely by one unusually strong (or weak) year. Uncheck a year "
+    "below to see what the CAGR looks like without it - if the number "
+    "swings wildly, that year is doing most of the work."
+)
+
+DEEP_DIVE_NO_DATA_INFO = (
+    "No backtest data yet. Run a backtest from the Backtest tab first."
+)
+
+DEEP_DIVE_NOT_ENOUGH_YEARS_INFO = (
+    "This backtest only spans one calendar year - there's nothing to "
+    "compare yet. Run a longer backtest to use this page."
+)
+
+DEEP_DIVE_ALL_YEARS_CAPTION = (
+    "All years are currently selected, so both columns match. Uncheck a "
+    "year above to see the difference."
+)
+
+DEEP_DIVE_NO_YEARS_SELECTED_CAPTION = "Select at least one year to see its stats."
+
+DEEP_DIVE_STITCHED_CHART_CAPTION = (
+    "The equity curve for just the years you selected, stitched together "
+    "in order (each year picks up where the last one left off) - not the "
+    "same as re-running the backtest on only those years, but shows the "
+    "real ups and downs within each included year rather than a straight "
+    "line between yearly totals."
+)
+
+RETURN_TO_PAIN_HELP = (
+    "CAGR divided by the worst drawdown you experienced - in plain terms, "
+    "how much yearly return you got for every 1% of the deepest dip along "
+    "the way. Higher is better: a low ratio means the return came with a "
+    "rough, high-pain ride even if the headline CAGR looks good."
+)
+
+DEEP_DIVE_PARTIAL_YEAR_HELP = (
+    "Your selection covers less than a full year, so this CAGR is an "
+    "extrapolation - it takes the actual return over those few months and "
+    "projects what it would look like if that same rate held for a full "
+    "year. It is NOT a measured annual rate, and can look much larger (or "
+    "smaller) than the plain, non-annualized return shown on the Backtest "
+    "tab's Year-by-year breakdown for the same period."
+)
+
+DEEP_DIVE_PARTIAL_YEAR_CAPTION = (
+    "This covers only ~{months:.1f} months of data - the CAGR above is "
+    "extrapolated from a partial year, not a real measured annual rate. "
+    "Treat it as a rough projection, not a reliable figure."
 )

@@ -9,6 +9,7 @@ import streamlit as st
 
 import backtest as backtest_engine
 import inflation_utils
+import nifty_utils
 import strings
 from constants import (
     APP_DIR,
@@ -192,7 +193,7 @@ def render_portfolio_result(initial_capital):
             m4.metric("Funded trades", funded_count)
             m5.metric("Skipped (no capital)", skipped_count)
 
-            render_equity_chart(portfolio_df, show_inflation_adjusted, yearly_rates)
+            render_equity_chart(portfolio_df, initial_capital, show_inflation_adjusted, yearly_rates)
 
             with st.expander("Year-by-year breakdown"):
                 st.caption(strings.YEARLY_BREAKDOWN_CAPTION)
@@ -252,15 +253,33 @@ def adjust_for_inflation(portfolio_df, initial_capital, final_equity, total_retu
     return real_final_equity, real_total_return_pct, real_cagr_display, caption
 
 
-def render_equity_chart(portfolio_df, show_inflation_adjusted, yearly_rates):
-    if not show_inflation_adjusted or not yearly_rates:
-        st.line_chart(portfolio_df.set_index("Date")["Equity"])
-        return
+def render_equity_chart(portfolio_df, initial_capital, show_inflation_adjusted, yearly_rates):
+    show_nifty_comparison = st.checkbox(
+        "Compare with Nifty 50", help=strings.NIFTY_COMPARISON_HELP
+    )
 
     chart_df = portfolio_df.set_index("Date")[["Equity"]].rename(columns={"Equity": "Nominal"})
-    chart_df["Inflation-adjusted"] = deflate_equity(
-        portfolio_df["Date"], portfolio_df["Equity"], yearly_rates
-    ).values
+
+    if show_inflation_adjusted and yearly_rates:
+        chart_df["Inflation-adjusted"] = deflate_equity(
+            portfolio_df["Date"], portfolio_df["Equity"], yearly_rates
+        ).values
+
+    if show_nifty_comparison:
+        start_date = portfolio_df["Date"].min().date()
+        end_date = portfolio_df["Date"].max().date()
+        with st.spinner("Building Nifty 50 benchmark..."):
+            benchmark_df = nifty_utils.build_nifty_50_benchmark(start_date, end_date, initial_capital)
+
+        if benchmark_df is None:
+            st.error(strings.NIFTY_FETCH_ERROR)
+        else:
+            st.caption(strings.NIFTY_COMPARISON_CAPTION)
+            benchmark_series = benchmark_df.set_index("Date")["Equity"].reindex(
+                chart_df.index, method="ffill"
+            )
+            chart_df["Nifty 50"] = benchmark_series.values
+
     st.line_chart(chart_df)
 
 
