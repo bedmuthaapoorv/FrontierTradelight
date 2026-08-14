@@ -57,7 +57,7 @@ POSITION_SLOTS_CAPTION = (
 
 CACHE_CAPTION = (
     "First run for a given date range fetches history from NSE and caches it "
-    "in backtest_cache/; later runs over the same range reuse that cache "
+    "in data/backtest_cache/; later runs over the same range reuse that cache "
     "regardless of exit strategy changes."
 )
 
@@ -126,8 +126,9 @@ SELL_TAB_CAPTION = (
 
 HOLDINGS_EDITOR_CAPTION = (
     "Add each open position below (symbol, entry price, entry date), then "
-    "run the check. Holdings are saved to holdings.csv as you edit, so they "
-    "persist across sessions - remove a row once you've sold that position."
+    "run the check. Holdings are saved to data/holdings.csv as you edit, so "
+    "they persist across sessions - remove a row once you've sold that "
+    "position."
 )
 
 NO_HOLDINGS_CAPTION = "Add at least one holding above before checking exit signals."

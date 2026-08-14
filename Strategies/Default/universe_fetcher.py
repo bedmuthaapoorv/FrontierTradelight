@@ -5,9 +5,10 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
+from constants import UNIVERSE_CACHE_PATH
 from nse_utils import fetch_stock_history
 
-CACHE_FILE = "universe_cache.json"
+CACHE_FILE = UNIVERSE_CACHE_PATH
 CACHE_EXPIRY_DAYS = 1
 
 def fetch_nifty_100():

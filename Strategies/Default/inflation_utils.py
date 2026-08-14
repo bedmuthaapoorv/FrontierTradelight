@@ -9,9 +9,9 @@ from datetime import datetime, timedelta
 
 import requests
 
-from constants import APP_DIR
+from constants import INFLATION_CACHE_PATH
 
-CACHE_PATH = os.path.join(APP_DIR, "inflation_cache.json")
+CACHE_PATH = INFLATION_CACHE_PATH
 CACHE_EXPIRY_DAYS = 30  # annual CPI figures change rarely; no need to refetch often
 WORLD_BANK_URL = "https://api.worldbank.org/v2/country/IN/indicator/FP.CPI.TOTL.ZG"
 

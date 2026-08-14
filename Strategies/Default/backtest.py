@@ -40,12 +40,19 @@ import pandas as pd
 
 from universe_fetcher import get_top_stocks_by_sector
 from nse_utils import fetch_stock_history, calculate_sector_strength, calculate_market_breadth
+from constants import (
+    BACKTEST_CACHE_DIR,
+    BACKTEST_PORTFOLIO_PATH,
+    BACKTEST_SUMMARY_PATH,
+    BACKTEST_TRADES_PATH,
+    NEAR_MISSES_PATH,
+)
 import generated_rules
 import generated_exit_strategy
 
 WARMUP_DAYS = 400
 MIN_HISTORY_ROWS = 60
-CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backtest_cache")
+CACHE_DIR = BACKTEST_CACHE_DIR
 
 # jugaad-data (via NSE's historical API) chunks each stock's fetch into one
 # request per calendar month, and further parallelizes those chunks
@@ -522,10 +529,10 @@ def main():
     parser.add_argument("--limit-per-sector", type=int, default=50)
     parser.add_argument("--initial-capital", type=float, default=100000.0, help="Starting portfolio capital, e.g. 100000")
     parser.add_argument("--max-positions", type=int, default=10, help="Max number of concurrent open positions")
-    parser.add_argument("--trades-out", default="backtest_trades.csv")
-    parser.add_argument("--summary-out", default="backtest_summary.csv")
-    parser.add_argument("--portfolio-out", default="backtest_portfolio.csv")
-    parser.add_argument("--near-misses-out", default="near_misses.csv")
+    parser.add_argument("--trades-out", default=BACKTEST_TRADES_PATH)
+    parser.add_argument("--summary-out", default=BACKTEST_SUMMARY_PATH)
+    parser.add_argument("--portfolio-out", default=BACKTEST_PORTFOLIO_PATH)
+    parser.add_argument("--near-misses-out", default=NEAR_MISSES_PATH)
     args = parser.parse_args()
 
     def progress(done, total, day):

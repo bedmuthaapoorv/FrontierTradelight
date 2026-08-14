@@ -11,13 +11,17 @@ All of the project's code lives under [`Strategies/Default/`](Strategies/Default
 ## How it fits together
 
 ```
-rules.md       --(Gemini)-->  generated_rules.py        --(used by)-->  stock_screener.py --> stock_report.csv
+rules.md       --(Gemini)-->  generated_rules.py        --(used by)-->  stock_screener.py --> data/stock_report.csv
                                                                   \
-exit_rules.md  --(Gemini)-->  generated_exit_strategy.py  ---------+-->  backtest.py --> backtest_trades.csv
-                                                                  /                   --> backtest_summary.csv
-                                              universe_fetcher.py                    --> backtest_portfolio.csv
+exit_rules.md  --(Gemini)-->  generated_exit_strategy.py  ---------+-->  backtest.py --> data/backtest_trades.csv
+                                                                  /                   --> data/backtest_summary.csv
+                                              universe_fetcher.py                    --> data/backtest_portfolio.csv
                                        (Nifty 100 + sector + market-breadth data, cached)
 ```
+
+All generated/runtime output (reports, caches, logs) is written to
+[`Strategies/Default/data/`](Strategies/Default/data/), kept separate from
+the project's source files.
 
 - **`rules.md`** — the entry strategy spec: mandatory filters, rejection
   rules, ranking/scoring weights, and desired output columns, in plain
@@ -154,11 +158,15 @@ python backtest.py --start 2023-07-23 --end 2026-06-30 \
 
 This replays the strategy over the date range with no look-ahead, resolves
 every signal's entry/exit independently, then simulates a real portfolio on
-top of those trades. Writes `backtest_trades.csv`, `backtest_summary.csv`,
-and `backtest_portfolio.csv`, and prints a portfolio summary (final equity,
-total return, funded vs. skipped-for-lack-of-capital trade counts).
+top of those trades. Writes `data/backtest_trades.csv`,
+`data/backtest_summary.csv`, and `data/backtest_portfolio.csv`, and prints a
+portfolio summary (final equity, total return, funded vs.
+skipped-for-lack-of-capital trade counts).
 
 ## Output
+
+All generated output lives in
+[`Strategies/Default/data/`](Strategies/Default/data/):
 
 - **`stock_report.csv`** (live screener) — one row per evaluated stock:
   `Symbol`, `Passed` (bool), `ClosenessScore` (0–100), `FailedRules`, plus
@@ -171,6 +179,10 @@ total return, funded vs. skipped-for-lack-of-capital trade counts).
   `ClosenessScore`, with win rate and mean/median/total profit per bucket.
 - **`backtest_portfolio.csv`** (backtest) — the portfolio's equity curve
   over time.
+- **`near_misses.csv`** (backtest) — stocks that failed exactly one rule,
+  used by the Missed Opportunities tab.
+- **`holdings.csv`** / **`sell_report.csv`** (Sell tab) — your tracked
+  positions and the latest exit-signal check against them.
 
 ## Documentation
 
@@ -198,10 +210,10 @@ total return, funded vs. skipped-for-lack-of-capital trade counts).
 
 ## Notes & caveats
 
-- `universe_cache.json` and `backtest_cache/` are generated/cached data,
-  not tracked in git. `universe_cache.json` expires after 1 day; the
+- `data/universe_cache.json` and `data/backtest_cache/` are generated/cached
+  data, not tracked in git. `universe_cache.json` expires after 1 day; the
   backtest's per-symbol history cache never expires (historical ranges are
-  immutable once in the past) — delete `backtest_cache/` to force a
+  immutable once in the past) — delete `data/backtest_cache/` to force a
   refetch.
 - `jugaad-data` pulls from NSE's historical (EOD) archives, which lag live
   quotes by 1+ trading session — expect some drift if you compare against

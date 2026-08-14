@@ -111,10 +111,12 @@ tab's session state.
 - **Don't import from another `tabs/*.py` module.** If two tabs need to
   share logic, that logic belongs in `ui_helpers.py`, not in one tab
   importing from another - keeps plugins independent and mergeable.
-- **New persistent files are gitignored by default for generated data.**
-  If your plugin writes a CSV/log that's per-user runtime output (not
-  something to commit), add it to `.gitignore` alongside the existing
-  `stock_report.csv`, `backtest_trades.csv`, etc.
+- **Runtime output goes in `data/`, not the project root.** All generated
+  CSVs, caches, and logs live under `Strategies/Default/data/` (see
+  `constants.DATA_DIR`) - the whole folder is gitignored, so a new path
+  built with `os.path.join(DATA_DIR, "your_file.csv")` needs no additional
+  `.gitignore` entry. Add the path as a new constant in `constants.py`
+  rather than hardcoding it in your plugin.
 - **A subprocess script, not inline logic, for anything slow or
   NSE-fetching.** The existing tabs never fetch data or run a backtest
   inline in the Streamlit process - they shell out to a dedicated `.py`

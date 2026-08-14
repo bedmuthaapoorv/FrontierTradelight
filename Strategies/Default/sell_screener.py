@@ -14,6 +14,7 @@ import warnings
 
 import pandas as pd
 
+from constants import HOLDINGS_PATH, SELL_REPORT_PATH
 from nse_utils import fetch_stock_history
 
 warnings.filterwarnings("ignore")
@@ -185,8 +186,8 @@ def screen_holdings(holdings):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--holdings", default="holdings.csv")
-    parser.add_argument("--out", default="sell_report.csv")
+    parser.add_argument("--holdings", default=HOLDINGS_PATH)
+    parser.add_argument("--out", default=SELL_REPORT_PATH)
     args = parser.parse_args()
 
     holdings = load_holdings(args.holdings)

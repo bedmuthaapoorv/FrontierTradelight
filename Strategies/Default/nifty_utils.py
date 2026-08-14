@@ -17,10 +17,10 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
-from constants import APP_DIR
+from constants import NIFTY50_CACHE_PATH
 from nse_utils import fetch_stock_history
 
-CACHE_PATH = os.path.join(APP_DIR, "nifty50_cache.json")
+CACHE_PATH = NIFTY50_CACHE_PATH
 CACHE_EXPIRY_DAYS = 1
 NIFTY_50_LIST_URL = "https://archives.nseindia.com/content/indices/ind_nifty50list.csv"
 
