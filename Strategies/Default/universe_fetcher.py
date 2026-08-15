@@ -5,20 +5,21 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
+from constants import UNIVERSE_CACHE_PATH
 from nse_utils import fetch_stock_history
 
-CACHE_FILE = "universe_cache.json"
+CACHE_FILE = UNIVERSE_CACHE_PATH
 CACHE_EXPIRY_DAYS = 1
 
-def fetch_nifty_50():
-    """Fetches the Nifty 50 constituents from NSE."""
-    url = "https://archives.nseindia.com/content/indices/ind_nifty50list.csv"
+def fetch_nifty_100():
+    """Fetches the Nifty 100 constituents from NSE."""
+    url = "https://archives.nseindia.com/content/indices/ind_nifty100list.csv"
     try:
         df = pd.read_csv(url)
         # Columns: Company Name, Industry, Symbol, Series, ISIN Code
         return df
     except Exception as e:
-        print(f"Error fetching Nifty 50 list: {e}")
+        print(f"Error fetching Nifty 100 list: {e}")
         return None
 
 def fetch_symbol_return(symbol, from_date, to_date):
@@ -34,7 +35,7 @@ def fetch_symbol_return(symbol, from_date, to_date):
 
 def get_top_stocks_by_sector(limit_per_sector=50):
     """
-    Fetches the Nifty 50 stocks, calculates their 6-month performance,
+    Fetches the Nifty 100 stocks, calculates their 6-month performance,
     and returns the top `limit_per_sector` stocks per sector.
     """
     # Check cache first
@@ -49,13 +50,13 @@ def get_top_stocks_by_sector(limit_per_sector=50):
         except Exception as e:
             print(f"Error reading cache, fetching fresh data: {e}")
 
-    print("Fetching Nifty 50 list from NSE...")
-    nifty50_df = fetch_nifty_50()
-    if nifty50_df is None or nifty50_df.empty:
-        print("Failed to fetch Nifty 50, returning empty universe.")
+    print("Fetching Nifty 100 list from NSE...")
+    nifty100_df = fetch_nifty_100()
+    if nifty100_df is None or nifty100_df.empty:
+        print("Failed to fetch Nifty 100, returning empty universe.")
         return {}
 
-    tickers_list = nifty50_df['Symbol'].tolist()
+    tickers_list = nifty100_df['Symbol'].tolist()
 
     print(f"Fetching 6-month historical data for {len(tickers_list)} stocks...")
     to_date = datetime.now().date()
@@ -64,7 +65,7 @@ def get_top_stocks_by_sector(limit_per_sector=50):
     performance = []
     symbol_info = {
         row['Symbol']: {"Name": row['Company Name'], "Sector": row['Industry']}
-        for _, row in nifty50_df.iterrows()
+        for _, row in nifty100_df.iterrows()
     }
 
     with ThreadPoolExecutor(max_workers=5) as executor:

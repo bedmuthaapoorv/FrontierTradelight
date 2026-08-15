@@ -12,6 +12,7 @@ warnings.filterwarnings('ignore')
 
 from universe_fetcher import get_top_stocks_by_sector
 from nse_utils import fetch_stock_history, calculate_sector_strength, calculate_market_breadth
+from constants import REPORT_PATH
 
 # 1. Fetch Dynamic Stock Universe by Sector
 print("Initializing Dynamic Stock Universe...")
@@ -145,12 +146,12 @@ def main():
     print(df_results.head(20).to_string(index=False))
 
     df_results.to_csv(
-        "stock_report.csv",
+        REPORT_PATH,
         index=False
     )
 
     print(
-        "\nResults saved to stock_report.csv"
+        f"\nResults saved to {REPORT_PATH}"
     )
 
 if __name__ == "__main__":

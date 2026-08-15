@@ -31,6 +31,7 @@ import datetime
 import json
 import os
 import random
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
@@ -41,12 +42,23 @@ import pandas as pd
 
 from universe_fetcher import get_top_stocks_by_sector
 from nse_utils import fetch_stock_history, calculate_sector_strength, calculate_market_breadth, calculate_atr_stats
+from constants import (
+    BACKTEST_CACHE_DIR,
+    BACKTEST_PORTFOLIO_PATH,
+    BACKTEST_PORTFOLIO_RISK_PATH,
+    BACKTEST_RISK_INFO_PATH,
+    BACKTEST_SUMMARY_PATH,
+    BACKTEST_SUMMARY_RISK_PATH,
+    BACKTEST_TRADES_PATH,
+    BACKTEST_TRADES_RISK_PATH,
+    NEAR_MISSES_PATH,
+)
 import generated_rules
 import generated_exit_strategy
 
 WARMUP_DAYS = 400
 MIN_HISTORY_ROWS = 60
-CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backtest_cache")
+CACHE_DIR = BACKTEST_CACHE_DIR
 
 # jugaad-data (via NSE's historical API) chunks each stock's fetch into one
 # request per calendar month, and further parallelizes those chunks
@@ -305,12 +317,12 @@ def _open_and_resolve_trade(symbol, full_df, signal_day, end_date, closeness_sco
 def load_price_data(start_date, end_date, limit_per_sector=50):
     """Fetch (or load from cache) the universe and its OHLCV history for
     [start_date, end_date] - the same first two steps run_backtest() does,
-    factored out so a second sizing-mode comparison run (see
-    compare_sizing_modes() / main()'s --trades-in) can reuse an already
-    -resolved trade list without re-running the expensive day-by-day
-    signal-evaluation loop, while still getting fresh price_data for
-    mark-to-market (itself cheap, since load_universe_history hits the
-    on-disk cache for any range already fetched)."""
+    factored out so a second sizing-mode comparison run (see main()'s
+    --trades-in) can reuse an already-resolved trade list without re-running
+    the expensive day-by-day signal-evaluation loop, while still getting
+    fresh price_data for mark-to-market (itself cheap, since
+    load_universe_history hits the on-disk cache for any range already
+    fetched)."""
     universe = get_top_stocks_by_sector(limit_per_sector=limit_per_sector)
     if not universe:
         raise RuntimeError("Could not build stock universe.")
@@ -322,11 +334,44 @@ def load_price_data(start_date, end_date, limit_per_sector=50):
     return universe, data
 
 
+NEAR_MISS_HOLDING_DAYS = 20
+
+
+def _normalize_rule_label(failed_rule):
+    """generated_rules.py's failure messages embed the specific value that
+    failed (e.g. "RSI outside range (55-75): 76.39", "Sector rank 14 not in
+    top 10") - fine for a single message, but it means every near-miss gets
+    its own one-off label, so grouping "by rule" never aggregates. Strips
+    all numbers to get a stable per-rule label instead (the full original
+    message is kept separately as FailedRuleDetail for individual review)."""
+    normalized = re.sub(r"\d+\.?\d*", "", failed_rule)
+    normalized = re.sub(r"\s+", " ", normalized).strip(" :")
+    return normalized or failed_rule
+
+
+def _forward_return_pct(full_df, signal_day, holding_days=NEAR_MISS_HOLDING_DAYS):
+    """What a stock did after a given day, on the same next-day-open entry
+    convention as a real trade - used to score near-misses (see below)
+    against a fixed holding period, not the exit strategy (a near-miss
+    never opened a real trade, so there's no exit logic to run)."""
+    future = full_df[full_df.index.date > signal_day]
+    if future.empty:
+        return None
+
+    entry_price = float(future["open"].iloc[0])
+    if entry_price == 0:
+        return None
+
+    exit_row_idx = min(holding_days - 1, len(future) - 1)
+    exit_price = float(future["close"].iloc[exit_row_idx])
+    return (exit_price - entry_price) / entry_price * 100
+
+
 def run_backtest(start_date, end_date, limit_per_sector=50, progress_callback=None):
-    """Run the backtest. Returns (trades_df, summary_df, price_data), where
-    price_data is the symbol -> OHLCV DataFrame dict used to generate the
-    signals - simulate_portfolio() needs it to revalue open positions
-    day-by-day for a true mark-to-market equity curve.
+    """Run the backtest. Returns (trades_df, summary_df, near_misses_df,
+    price_data), where price_data is the symbol -> OHLCV DataFrame dict used
+    to generate the signals - simulate_portfolio() needs it to revalue open
+    positions day-by-day for a true mark-to-market equity curve.
 
     progress_callback, if given, is called as progress_callback(done, total, day)
     once per simulated trading day.
@@ -334,6 +379,12 @@ def run_backtest(start_date, end_date, limit_per_sector=50, progress_callback=No
     Exit logic comes entirely from generated_exit_strategy.py (regenerated
     from exit_rules.md) - this function doesn't take SL/TP/ATR parameters
     itself; edit exit_rules.md and regenerate to change exit behavior.
+
+    Also tracks "near-misses": stocks that failed exactly one rule on a
+    given day. For each, records what a simple NEAR_MISS_HOLDING_DAYS-day
+    hold would have returned, so you can see - per rule - whether the
+    stocks it's blocking tend to be worth catching (see near_misses_df,
+    and the "Missed Opportunities" tab that reads it).
     """
     universe, data = load_price_data(start_date, end_date, limit_per_sector=limit_per_sector)
 
@@ -352,6 +403,7 @@ def run_backtest(start_date, end_date, limit_per_sector=50, progress_callback=No
     pos = {symbol: -1 for symbol in data}
 
     trades = []
+    near_misses = []
     total_days = len(all_dates)
 
     for day_idx, day in enumerate(all_dates):
@@ -383,6 +435,18 @@ def run_backtest(start_date, end_date, limit_per_sector=50, progress_callback=No
                 continue
 
             if not result.get("Passed"):
+                failed_rules = result.get("FailedRules", [])
+                if len(failed_rules) == 1:
+                    forward_return = _forward_return_pct(data[symbol], day)
+                    if forward_return is not None:
+                        near_misses.append({
+                            "Date": day,
+                            "Symbol": symbol,
+                            "FailedRule": _normalize_rule_label(failed_rules[0]),
+                            "FailedRuleDetail": failed_rules[0],
+                            "ClosenessScore": round(float(result.get("ClosenessScore", 0.0)), 2),
+                            "ForwardReturnPct": round(forward_return, 2),
+                        })
                 continue
 
             atr_stats = calculate_atr_stats(df_slice)
@@ -402,7 +466,11 @@ def run_backtest(start_date, end_date, limit_per_sector=50, progress_callback=No
     ]
     trades_df = pd.DataFrame(trades, columns=trade_columns)
     summary_df = summarize_trades(trades_df)
-    return trades_df, summary_df, data
+
+    near_miss_columns = ["Date", "Symbol", "FailedRule", "FailedRuleDetail", "ClosenessScore", "ForwardReturnPct"]
+    near_misses_df = pd.DataFrame(near_misses, columns=near_miss_columns)
+
+    return trades_df, summary_df, near_misses_df, data
 
 
 def kelly_stats(r_multiples):
@@ -986,9 +1054,10 @@ def main():
     parser.add_argument("--limit-per-sector", type=int, default=50)
     parser.add_argument("--initial-capital", type=float, default=100000.0, help="Starting portfolio capital, e.g. 100000")
     parser.add_argument("--max-positions", type=int, default=10, help="Max number of concurrent open positions")
-    parser.add_argument("--trades-out", default="backtest_trades.csv")
-    parser.add_argument("--summary-out", default="backtest_summary.csv")
-    parser.add_argument("--portfolio-out", default="backtest_portfolio.csv")
+    parser.add_argument("--trades-out", default=BACKTEST_TRADES_PATH)
+    parser.add_argument("--summary-out", default=BACKTEST_SUMMARY_PATH)
+    parser.add_argument("--portfolio-out", default=BACKTEST_PORTFOLIO_PATH)
+    parser.add_argument("--near-misses-out", default=NEAR_MISSES_PATH)
     parser.add_argument("--sizing-mode", choices=["equal_weight", "risk"], default="equal_weight",
                          help="'equal_weight' (default, original behavior) or 'risk' for half-Kelly risk-based sizing")
     parser.add_argument("--half-kelly-cap-pct", type=float, default=2.0)
@@ -1011,11 +1080,15 @@ def main():
         print(f"Evaluating day {done}/{total} ({day})...")
 
     if args.trades_in:
+        # Sizing-comparison run: reuse an already-resolved trade list rather
+        # than regenerating signals. Near-misses belong to signal generation,
+        # so there are none to rewrite in this mode.
         trades_df = pd.read_csv(args.trades_in)
         summary_df = summarize_trades(trades_df)
+        near_misses_df = None
         _, price_data = load_price_data(args.start, args.end, limit_per_sector=args.limit_per_sector)
     else:
-        trades_df, summary_df, price_data = run_backtest(
+        trades_df, summary_df, near_misses_df, price_data = run_backtest(
             args.start, args.end,
             limit_per_sector=args.limit_per_sector,
             progress_callback=progress,
@@ -1037,9 +1110,13 @@ def main():
     trades_df.to_csv(args.trades_out, index=False)
     summary_df.to_csv(args.summary_out, index=False)
     portfolio_df.to_csv(args.portfolio_out, index=False)
+    if near_misses_df is not None:
+        near_misses_df.to_csv(args.near_misses_out, index=False)
 
     print(f"\n{len(trades_df)} trades simulated.")
     print(summary_df.to_string(index=False))
+    if near_misses_df is not None:
+        print(f"\n{len(near_misses_df)} near-misses recorded (stocks that failed exactly one rule).")
 
     if not portfolio_df.empty:
         final_equity = portfolio_df["Equity"].iloc[-1]
@@ -1062,6 +1139,8 @@ def main():
     print(f"\nTrades saved to {args.trades_out}")
     print(f"Summary saved to {args.summary_out}")
     print(f"Portfolio equity curve saved to {args.portfolio_out}")
+    if near_misses_df is not None:
+        print(f"Near-misses saved to {args.near_misses_out}")
 
 
 if __name__ == "__main__":

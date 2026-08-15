@@ -11,13 +11,17 @@ All of the project's code lives under [`Strategies/Default/`](Strategies/Default
 ## How it fits together
 
 ```
-rules.md       --(Gemini)-->  generated_rules.py        --(used by)-->  stock_screener.py --> stock_report.csv
+rules.md       --(Gemini)-->  generated_rules.py        --(used by)-->  stock_screener.py --> data/stock_report.csv
                                                                   \
-exit_rules.md  --(Gemini)-->  generated_exit_strategy.py  ---------+-->  backtest.py --> backtest_trades.csv
-                                                                  /                   --> backtest_summary.csv
-                                              universe_fetcher.py                    --> backtest_portfolio.csv
-                                       (Nifty 50 + sector + market-breadth data, cached)
+exit_rules.md  --(Gemini)-->  generated_exit_strategy.py  ---------+-->  backtest.py --> data/backtest_trades.csv
+                                                                  /                   --> data/backtest_summary.csv
+                                              universe_fetcher.py                    --> data/backtest_portfolio.csv
+                                       (Nifty 100 + sector + market-breadth data, cached)
 ```
+
+All generated/runtime output (reports, caches, logs) is written to
+[`Strategies/Default/data/`](Strategies/Default/data/), kept separate from
+the project's source files.
 
 - **`rules.md`** — the entry strategy spec: mandatory filters, rejection
   rules, ranking/scoring weights, and desired output columns, in plain
@@ -44,7 +48,7 @@ exit_rules.md  --(Gemini)-->  generated_exit_strategy.py  ---------+-->  backtes
   `backtest.py`. `backtest.py` itself (not this file) always force-closes
   any still-open trade at the end of the backtest's date range, so a
   regenerated exit strategy can never leave a trade open forever.
-- **`universe_fetcher.py`** — downloads the Nifty 50 constituent list from
+- **`universe_fetcher.py`** — downloads the Nifty 100 constituent list from
   NSE, pulls price history via `jugaad-data`, ranks stocks by sector
   performance, and returns the top N stocks per sector. Results are cached
   in `universe_cache.json` for 1 day.
@@ -154,11 +158,15 @@ python backtest.py --start 2023-07-23 --end 2026-06-30 \
 
 This replays the strategy over the date range with no look-ahead, resolves
 every signal's entry/exit independently, then simulates a real portfolio on
-top of those trades. Writes `backtest_trades.csv`, `backtest_summary.csv`,
-and `backtest_portfolio.csv`, and prints a portfolio summary (final equity,
-total return, funded vs. skipped-for-lack-of-capital trade counts).
+top of those trades. Writes `data/backtest_trades.csv`,
+`data/backtest_summary.csv`, and `data/backtest_portfolio.csv`, and prints a
+portfolio summary (final equity, total return, funded vs.
+skipped-for-lack-of-capital trade counts).
 
 ## Output
+
+All generated output lives in
+[`Strategies/Default/data/`](Strategies/Default/data/):
 
 - **`stock_report.csv`** (live screener) — one row per evaluated stock:
   `Symbol`, `Passed` (bool), `ClosenessScore` (0–100), `FailedRules`, plus
@@ -171,6 +179,10 @@ total return, funded vs. skipped-for-lack-of-capital trade counts).
   `ClosenessScore`, with win rate and mean/median/total profit per bucket.
 - **`backtest_portfolio.csv`** (backtest) — the portfolio's equity curve
   over time.
+- **`near_misses.csv`** (backtest) — stocks that failed exactly one rule,
+  used by the Missed Opportunities tab.
+- **`holdings.csv`** / **`sell_report.csv`** (Sell tab) — your tracked
+  positions and the latest exit-signal check against them.
 
 ## Documentation
 
@@ -183,20 +195,25 @@ total return, funded vs. skipped-for-lack-of-capital trade counts).
   current entry strategy (worked example).
 - [`Strategies/Default/exit_rules.md`](Strategies/Default/exit_rules.md) —
   the current exit strategy (worked example).
+- [`Strategies/Default/PLUGIN_GUIDE.md`](Strategies/Default/PLUGIN_GUIDE.md) —
+  how to add a new tab to the UI as a self-contained plugin.
 - Prior strategy versions — auto-saved whenever you save a changed
-  `rules.md` / `exit_rules.md` (restorable from the UI's Backtest tab):
-  - [`Strategies/Rules_backup/trendline_rules.md`](Strategies/Rules_backup/trendline_rules.md)
-  - [`Strategies/Rules_backup/trendline_support_momentum_rules.md`](Strategies/Rules_backup/trendline_support_momentum_rules.md)
+  `rules.md` (restorable from the UI's Rules tab) or `exit_rules.md`
+  (restorable from the UI's Sell tab):
+  - [`Strategies/Rules_backup/trendline_bounce_confirmation_v1_rules.md`](Strategies/Rules_backup/trendline_bounce_confirmation_v1_rules.md) —
+    real pivot-low trendline detection + bounce confirmation; the earlier
+    trendline strategy (placeholder trendline logic, no confirmation
+    trigger) has been removed as superseded.
   - [`Strategies/Rules_backup/mean_reversion_rules.md`](Strategies/Rules_backup/mean_reversion_rules.md)
   - [`Strategies/Rules_backup/oversold_mean_reversion_rules.md`](Strategies/Rules_backup/oversold_mean_reversion_rules.md)
   - [`Strategies/ExitRules_backup/fixed_stop_loss_take_profit_exit_rules.md`](Strategies/ExitRules_backup/fixed_stop_loss_take_profit_exit_rules.md)
 
 ## Notes & caveats
 
-- `universe_cache.json` and `backtest_cache/` are generated/cached data,
-  not tracked in git. `universe_cache.json` expires after 1 day; the
+- `data/universe_cache.json` and `data/backtest_cache/` are generated/cached
+  data, not tracked in git. `universe_cache.json` expires after 1 day; the
   backtest's per-symbol history cache never expires (historical ranges are
-  immutable once in the past) — delete `backtest_cache/` to force a
+  immutable once in the past) — delete `data/backtest_cache/` to force a
   refetch.
 - `jugaad-data` pulls from NSE's historical (EOD) archives, which lag live
   quotes by 1+ trading session — expect some drift if you compare against
@@ -211,7 +228,7 @@ total return, funded vs. skipped-for-lack-of-capital trade counts).
 - Backtest "total return" is cumulative over the whole date range, not
   annualized — check the accompanying CAGR figure before judging a result
   as strong or weak.
-- The backtest uses *today's* Nifty 50 constituent list applied
+- The backtest uses *today's* Nifty 100 constituent list applied
   retroactively (survivorship bias), and doesn't model slippage or
   brokerage/STT costs.
 - Never commit your real `.env` file or API key.

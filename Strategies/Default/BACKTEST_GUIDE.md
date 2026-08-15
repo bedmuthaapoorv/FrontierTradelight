@@ -172,7 +172,7 @@ that's worth knowing before you rely on it.
 
 ## Known limitations (read before trusting results)
 
-- **Survivorship bias:** the backtest uses *today's* Nifty 50 constituent
+- **Survivorship bias:** the backtest uses *today's* Nifty 100 constituent
   list applied retroactively. Stocks that were dropped from or added to the
   index during your date range aren't accounted for, which can flatter
   results slightly.

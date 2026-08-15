@@ -87,61 +87,13 @@ Example:
 
 ClosenessScore:
 
-Must be between 0 and 100.
-
-Scoring weights:
-
-Trendline Support = 40%
-Sector Strength = 25%
-Volume Trend = 20%
-RSI = 15%
-
-Rule Scoring:
-
-RSI:
-40-60 => 100
-
-Below 40:
-score = max(0, 100 - (40-rsi)*5)
-
-Above 60:
-score = max(0, 100 - (rsi-60)*5)
-
-Volume:
-
-V1 > V2 > V3:
-100
-
-One comparison fails:
-50
-
-Both fail:
-0
-
-Sector:
-
-Rank <= 5:
-100
-
-Rank > 5:
-score = max(0, 100 - (rank-5)*10)
-
-Trendline:
-
-Distance <= 3%:
-100
-
-Distance > 3%:
-score = max(0, 100 - (distance_pct-3)*20)
-
-Overall ClosenessScore:
-
-(
-trendline_score * 0.40 +
-sector_score * 0.25 +
-volume_score * 0.20 +
-rsi_score * 0.15
-)
+Must be between 0 and 100. Implement it EXACTLY according to the "Ranking
+Rules" / "Rank Score" section in RULES below - the specific factors,
+weights, and per-factor scoring formulas are defined there, not here. Do
+not substitute a different scoring scheme, and do not fall back to a
+generic weighting if RULES defines its own. If RULES has no Ranking Rules
+section at all, use a simple heuristic based on how close the stock came
+to passing every mandatory rule.
 
 Requirements:
 
@@ -177,6 +129,22 @@ Critical implementation constraints:
   a stock's sector rank, use `sector_ranks.get(symbol, 99)` directly - do NOT
   look up the stock's sector name first and then index sector_ranks by that
   name; sector_ranks is never keyed by sector name.
+- Never substitute a fixed/hardcoded placeholder for something RULES asks
+  you to compute (e.g. `dist_pct = 1.5  # placeholder`). If a rule requires
+  nontrivial geometry or statistics - trendline/support-resistance fitting,
+  regression, pivot/extrema detection, clustering, anything beyond a simple
+  arithmetic condition - implement it fully using numpy/scipy/pandas, using
+  the exact algorithm RULES specifies step by step if one is given. A
+  fake/approximated value that happens to make the code run is worse than
+  an honest failure.
+- When a rule asks you to count matches, touches, or occurrences against a
+  SPECIFIC set of points (e.g. "count how many pivot lows lie near this
+  line" or "count occurrences among the values listed in step N"), count
+  only against that exact set - never substitute a looser, easier-to-satisfy
+  superset (e.g. checking every row in a dataframe instead of only the
+  specific points named), even if it's simpler to implement. This silently
+  weakens the rule and produces a different, more lenient strategy than the
+  one specified.
 
 RULES:
 
