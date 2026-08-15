@@ -58,20 +58,34 @@ Return value:
 
 The function MUST return either:
 
-(a) A dict when an exit condition triggers within future_df:
+(a) A dict, in ALL cases where the entry-time risk calculation described in
+    exit_rules.md's "Pre-Trade Calculation" section (e.g. an initial
+    ATR-based stop-loss) can be computed - regardless of whether an exit
+    condition fires:
     {{
-        "ExitDate": <the date from future_df's index where the exit fired>,
+        "InitialSL": <float, the initial stop-loss level computed once at
+                      entry from signal_history_df, per exit_rules.md's
+                      Pre-Trade Calculation section. ALWAYS included
+                      whenever this entry-time value was computable, even
+                      if no exit condition ever fires within future_df.>,
+        "ExitDate": <the date from future_df's index where the exit fired,
+                     or None if no exit condition triggered>,
         "ExitPrice": <float, the close price on that date (or the
                       appropriate trigger price if exit_rules.md specifies
-                      one)>,
+                      one), or None if no exit condition triggered>,
         "ExitReason": <short string tag identifying which condition fired,
-                       e.g. "SL", "TP", "TrailingATR">
+                       e.g. "SL", "TP", "TrailingATR", or None if no exit
+                       condition triggered>
     }}
+    If future_df is exhausted with no exit condition firing, still return
+    this dict with ExitDate/ExitPrice/ExitReason set to None - do NOT
+    invent a fallback exit yourself. The caller (not this function) handles
+    forcing a close at the range's end, but it needs InitialSL from this
+    dict to do so correctly.
 
-(b) None, if no exit condition in exit_rules.md triggers anywhere within
-    future_df. Do NOT invent a fallback exit yourself - returning None is
-    correct and expected in this case. The caller (not this function)
-    handles forcing a close at the range's end.
+(b) None, ONLY if the entry-time risk calculation itself cannot be computed
+    (e.g. insufficient history for the required indicator at entry) - this
+    tells the caller to skip opening the trade entirely.
 
 Requirements:
 

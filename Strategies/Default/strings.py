@@ -74,6 +74,11 @@ YEARLY_BREAKDOWN_CAPTION = (
     "trusting the CAGR above as a forward expectation."
 )
 
+CHART_DRILLDOWN_HINT = (
+    "Drag across the chart to select a date range and see exactly which "
+    "trades were active during it."
+)
+
 SELL_TAB_CAPTION = (
     "Runs the exit logic in generated_exit_strategy.py against the stocks "
     "you currently hold, using live price data - the sell-side mirror of "
@@ -92,4 +97,60 @@ NO_HOLDINGS_CAPTION = "Add at least one holding above before checking exit signa
 BACKTEST_STOPPED_WARNING = (
     "Backtest stopped. Partial progress is lost — results/CSVs are only "
     "written when a run finishes."
+)
+
+COMPARE_RISK_SIZING_HELP = (
+    "After the equal-weight run finishes, re-simulates portfolio sizing on "
+    "the identical trade list using half-Kelly risk-based sizing (portfolio/"
+    "sector heat caps, volatility and market-breadth adjustment, a Monte "
+    "Carlo-calibrated drawdown throttle) instead of an equal slot per "
+    "position. Cheap - it reuses the same signals, only sizing differs. "
+    "Results appear in the Risk tab."
+)
+
+RISK_PARAMS_CAPTION = (
+    "Half-Kelly cap: hard ceiling on risk % per trade even if the Kelly "
+    "formula (from win rate and average R-multiple of past closed trades) "
+    "implies more. Heat caps: total capital-at-risk (to each open "
+    "position's initial stop) allowed at once, portfolio-wide and per "
+    "sector - a new trade that would breach either is sized down to fit "
+    "rather than skipped. Monte Carlo: bootstraps past trades' R-multiples "
+    "into synthetic equity paths to calibrate drawdown throttle bands and "
+    "estimate risk of ruin."
+)
+
+VAR_SECTION_CAPTION = (
+    "Value at Risk (VaR): the loss a trade won't exceed with X% confidence, "
+    "built from the actual entry-to-exit % return of every historical "
+    "trade this strategy has taken (regardless of whether capital was "
+    "available to fund it - this measures the asset/strategy's own return "
+    "behavior, not the sizing engine). CVaR (shown alongside, in the "
+    "tooltip) is the average loss in the worst-case tail beyond VaR - a "
+    "harsher number, since VaR alone says nothing about how bad things get "
+    "past that threshold."
+)
+
+VAR_METHOD_HELP = (
+    "Historical (default): uses the actual historical trade returns "
+    "directly - no resampling, exactly what happened. Simple and "
+    "transparent, but the tail percentile is noisy with few trades. "
+    "Monte Carlo: bootstrap-resamples those same historical returns "
+    "thousands of times (optionally compounding several trades per "
+    "simulated path via the horizon control) to smooth out that sampling "
+    "noise and estimate risk over a multi-trade horizon."
+)
+
+VAR_BY_ASSET_CAPTION = (
+    "Only shown for symbols with enough closed trades for a meaningful "
+    "percentile estimate. Rs figures use each symbol's own average funded "
+    "position size where available."
+)
+
+RISK_TAB_CAPTION = (
+    "Compares the same trade signals under two sizing regimes: the "
+    "original equal-weight split per position slot, versus half-Kelly "
+    "risk-based sizing with portfolio/sector heat caps, a volatility-ratio "
+    "and market-breadth adjustment, and a Monte Carlo-calibrated drawdown "
+    "throttle. Run a backtest from the Backtest tab with \"Also compare "
+    "with risk-based sizing\" checked to populate this."
 )

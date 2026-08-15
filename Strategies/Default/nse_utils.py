@@ -3,6 +3,7 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="jugaad_data")
 
 import pandas as pd
+import pandas_ta as ta
 from jugaad_data.nse import stock_df
 
 
@@ -53,6 +54,28 @@ def calculate_sector_strength(data, universe):
         symbol: sector_rank.get(info["Sector"], 99)
         for symbol, info in universe.items()
     }
+
+
+def calculate_atr_stats(df, atr_period=14, avg_period=60):
+    """Current ATR(atr_period) and its trailing avg_period-day rolling
+    average, both computed from `df` only up to its last available row (so
+    passing a date-truncated slice, as the backtester does, keeps this
+    look-ahead free). This is the "vol-ratio" input for risk-based position
+    sizing: current ATR relative to its own recent average tells the sizer
+    whether a stock is unusually volatile right now versus its own normal
+    range, independent of price level or sector.
+
+    Returns {"ATR": nan, "ATR_Avg60": nan} if there isn't enough history for
+    either the ATR itself or the rolling average of it.
+    """
+    if len(df) < atr_period + avg_period:
+        return {"ATR": float("nan"), "ATR_Avg60": float("nan")}
+
+    atr_series = ta.atr(df["high"], df["low"], df["close"], length=atr_period)
+    current_atr = atr_series.iloc[-1]
+    atr_avg = atr_series.iloc[-avg_period:].mean()
+
+    return {"ATR": current_atr, "ATR_Avg60": atr_avg}
 
 
 def calculate_market_breadth(data, ma_period=50):

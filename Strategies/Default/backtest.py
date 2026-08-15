@@ -28,6 +28,7 @@ Mechanics:
 
 import argparse
 import datetime
+import json
 import os
 import random
 import time
@@ -35,10 +36,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
 warnings.filterwarnings("ignore")
 
+import numpy as np
 import pandas as pd
 
 from universe_fetcher import get_top_stocks_by_sector
-from nse_utils import fetch_stock_history, calculate_sector_strength, calculate_market_breadth
+from nse_utils import fetch_stock_history, calculate_sector_strength, calculate_market_breadth, calculate_atr_stats
 import generated_rules
 import generated_exit_strategy
 
@@ -213,20 +215,27 @@ def load_universe_history(universe, start_date, end_date, warmup_days=WARMUP_DAY
     return data
 
 
-def _open_and_resolve_trade(symbol, full_df, signal_day, end_date, closeness_score):
+def _open_and_resolve_trade(symbol, full_df, signal_day, end_date, closeness_score,
+                             sector=None, market_breadth=None, atr_stats=None):
     """Enter at the next trading day's open after signal_day, then hand off
     to generated_exit_strategy.resolve_exit() to decide when to exit.
 
     generated_exit_strategy.py is regenerated from exit_rules.md the same
     way generated_rules.py is regenerated from rules.md - this function
     doesn't know or care what exit logic it implements (fixed SL/TP,
-    trailing ATR, or anything else the user writes).
+    trailing ATR, or anything else the user writes). Its Return Contract
+    (see exit_rules.md) requires it to always return InitialSL when
+    computable, even if no exit condition fires - only returning None when
+    the entry-time risk calc itself can't be computed, which this function
+    treats as "don't open this trade" (no stop-loss means no risk basis to
+    size or evaluate the trade against).
 
-    If resolve_exit() returns None (no exit condition fired) or raises, this
-    function - not the generated exit logic - force-closes the trade at the
-    last available close in range, tagged 'RangeEnd'. This guarantee holds
-    regardless of what exit_rules.md says, so a regenerated exit strategy
-    can never accidentally leave a trade open forever.
+    If resolve_exit() returns a dict with no exit date (data ran out before
+    any exit condition fired) or raises, this function - not the generated
+    exit logic - force-closes the trade at the last available close in
+    range, tagged 'RangeEnd'. This guarantee holds regardless of what
+    exit_rules.md says, so a regenerated exit strategy can never
+    accidentally leave a trade open forever.
     """
     future = full_df[(full_df.index.date > signal_day) & (full_df.index.date <= end_date)]
     if future.empty:
@@ -242,7 +251,14 @@ def _open_and_resolve_trade(symbol, full_df, signal_day, end_date, closeness_sco
     except Exception:
         exit_result = None
 
-    if exit_result is not None:
+    if exit_result is None:
+        # Entry-time risk calc (e.g. ATR-based initial stop) couldn't be
+        # computed - no risk basis to open or size this trade against.
+        return None
+
+    initial_sl = exit_result.get("InitialSL")
+
+    if exit_result.get("ExitDate") is not None:
         exit_date = exit_result["ExitDate"]
         exit_price = float(exit_result["ExitPrice"])
         exit_reason = exit_result["ExitReason"]
@@ -258,6 +274,15 @@ def _open_and_resolve_trade(symbol, full_df, signal_day, end_date, closeness_sco
     exit_date = pd.Timestamp(exit_date).date()
     profit_rs = (exit_price - entry_price) / entry_price * 100  # on a flat Rs.100 stake
 
+    # R-multiple: return expressed in units of the initial risk taken (the
+    # gap between entry and the initial stop-loss), not just raw % return -
+    # this is what the risk-sizing engine's Kelly stats are computed from.
+    risk_per_share = entry_price - initial_sl if initial_sl is not None else None
+    if risk_per_share is not None and risk_per_share > 0:
+        r_multiple = (exit_price - entry_price) / risk_per_share
+    else:
+        r_multiple = float("nan")
+
     return {
         "Symbol": symbol,
         "SignalDate": signal_day,
@@ -268,11 +293,40 @@ def _open_and_resolve_trade(symbol, full_df, signal_day, end_date, closeness_sco
         "ExitReason": exit_reason,
         "ClosenessScore": round(float(closeness_score), 2),
         "ProfitRs": round(profit_rs, 2),
+        "InitialSL": round(float(initial_sl), 2) if initial_sl is not None else None,
+        "RMultiple": round(r_multiple, 3) if pd.notna(r_multiple) else None,
+        "Sector": sector,
+        "MarketBreadthAtEntry": round(float(market_breadth), 1) if market_breadth is not None else None,
+        "ATR_Entry": round(float(atr_stats["ATR"]), 3) if atr_stats and pd.notna(atr_stats.get("ATR")) else None,
+        "ATR_Avg60": round(float(atr_stats["ATR_Avg60"]), 3) if atr_stats and pd.notna(atr_stats.get("ATR_Avg60")) else None,
     }
 
 
+def load_price_data(start_date, end_date, limit_per_sector=50):
+    """Fetch (or load from cache) the universe and its OHLCV history for
+    [start_date, end_date] - the same first two steps run_backtest() does,
+    factored out so a second sizing-mode comparison run (see
+    compare_sizing_modes() / main()'s --trades-in) can reuse an already
+    -resolved trade list without re-running the expensive day-by-day
+    signal-evaluation loop, while still getting fresh price_data for
+    mark-to-market (itself cheap, since load_universe_history hits the
+    on-disk cache for any range already fetched)."""
+    universe = get_top_stocks_by_sector(limit_per_sector=limit_per_sector)
+    if not universe:
+        raise RuntimeError("Could not build stock universe.")
+
+    data = load_universe_history(universe, start_date, end_date)
+    if not data:
+        raise RuntimeError("No historical data could be fetched for any stock in the universe.")
+
+    return universe, data
+
+
 def run_backtest(start_date, end_date, limit_per_sector=50, progress_callback=None):
-    """Run the backtest. Returns (trades_df, summary_df).
+    """Run the backtest. Returns (trades_df, summary_df, price_data), where
+    price_data is the symbol -> OHLCV DataFrame dict used to generate the
+    signals - simulate_portfolio() needs it to revalue open positions
+    day-by-day for a true mark-to-market equity curve.
 
     progress_callback, if given, is called as progress_callback(done, total, day)
     once per simulated trading day.
@@ -281,13 +335,7 @@ def run_backtest(start_date, end_date, limit_per_sector=50, progress_callback=No
     from exit_rules.md) - this function doesn't take SL/TP/ATR parameters
     itself; edit exit_rules.md and regenerate to change exit behavior.
     """
-    universe = get_top_stocks_by_sector(limit_per_sector=limit_per_sector)
-    if not universe:
-        raise RuntimeError("Could not build stock universe.")
-
-    data = load_universe_history(universe, start_date, end_date)
-    if not data:
-        raise RuntimeError("No historical data could be fetched for any stock in the universe.")
+    universe, data = load_price_data(start_date, end_date, limit_per_sector=limit_per_sector)
 
     all_dates = sorted({
         ts.date() for df in data.values() for ts in df.index
@@ -337,8 +385,12 @@ def run_backtest(start_date, end_date, limit_per_sector=50, progress_callback=No
             if not result.get("Passed"):
                 continue
 
+            atr_stats = calculate_atr_stats(df_slice)
             trade = _open_and_resolve_trade(
-                symbol, data[symbol], day, end_date, result.get("ClosenessScore", 0.0)
+                symbol, data[symbol], day, end_date, result.get("ClosenessScore", 0.0),
+                sector=universe.get(symbol, {}).get("Sector"),
+                market_breadth=market_breadth_today,
+                atr_stats=atr_stats,
             )
             if trade:
                 trades.append(trade)
@@ -346,36 +398,301 @@ def run_backtest(start_date, end_date, limit_per_sector=50, progress_callback=No
     trade_columns = [
         "Symbol", "SignalDate", "EntryDate", "EntryPrice",
         "ExitDate", "ExitPrice", "ExitReason", "ClosenessScore", "ProfitRs",
+        "InitialSL", "RMultiple", "Sector", "MarketBreadthAtEntry", "ATR_Entry", "ATR_Avg60",
     ]
     trades_df = pd.DataFrame(trades, columns=trade_columns)
     summary_df = summarize_trades(trades_df)
-    return trades_df, summary_df
+    return trades_df, summary_df, data
 
 
-def simulate_portfolio(trades_df, initial_capital=100000.0, max_concurrent_positions=10):
+def kelly_stats(r_multiples):
+    """Raw Kelly inputs and the resulting (unclipped, possibly negative)
+    Kelly fraction from a set of closed trades' R-multiples:
+
+        W  = win rate
+        b  = avg win R / avg loss R   (payoff ratio)
+        f* = W - (1-W)/b              (Kelly criterion)
+
+    Returned unclipped on purpose - a negative f* is the meaningful signal
+    that the sample shows no edge, which the sizing path floors away but
+    the UI needs to be able to report honestly. Returns None for the
+    derived fields when they aren't computable (empty sample, or no wins /
+    no losses yet so b is undefined).
+    """
+    valid = [r for r in r_multiples if r is not None and pd.notna(r)]
+    out = {
+        "sample_size": len(valid), "win_rate": None, "avg_win_r": None,
+        "avg_loss_r": None, "payoff_ratio": None, "kelly_fraction": None,
+    }
+    if not valid:
+        return out
+
+    wins = [r for r in valid if r > 0]
+    losses = [abs(r) for r in valid if r <= 0]
+    out["win_rate"] = len(wins) / len(valid)
+    if not wins or not losses:
+        return out
+
+    avg_win_r = sum(wins) / len(wins)
+    avg_loss_r = sum(losses) / len(losses)
+    out["avg_win_r"], out["avg_loss_r"] = avg_win_r, avg_loss_r
+    if avg_loss_r <= 0:
+        return out
+
+    payoff_ratio = avg_win_r / avg_loss_r
+    out["payoff_ratio"] = payoff_ratio
+    out["kelly_fraction"] = out["win_rate"] - (1 - out["win_rate"]) / payoff_ratio
+    return out
+
+
+def _kelly_base_risk_pct(closed_r_multiples, min_trades_for_kelly, default_risk_pct, half_kelly_cap_pct):
+    """Half-Kelly base risk % from a walk-forward set of closed trades'
+    R-multiples (return per trade expressed in units of initial risk taken).
+
+    base_risk_pct = clip(0.5 * f* * 100, 0, half_kelly_cap_pct), with f*
+    from kelly_stats().
+
+    Falls back to a flat default_risk_pct (rather than 0, so both sizing
+    modes stay comparable across the same date range) when: too few closed
+    trades exist yet to estimate W/b reliably, there are no wins or no
+    losses yet (b undefined), or the estimated edge is non-positive
+    (f* <= 0).
+    """
+    stats = kelly_stats(closed_r_multiples)
+    if stats["sample_size"] < min_trades_for_kelly:
+        return default_risk_pct
+
+    kelly_fraction = stats["kelly_fraction"]
+    if kelly_fraction is None or kelly_fraction <= 0:
+        return default_risk_pct
+
+    return float(min(0.5 * kelly_fraction * 100, half_kelly_cap_pct))
+
+
+def run_monte_carlo(r_multiples, base_risk_pct=1.0, n_simulations=2000, ruin_threshold_pct=-50.0,
+                     path_length=None, seed=None):
+    """Bootstrap-resample historical trade R-multiples (with replacement) to
+    build a distribution of synthetic equity paths, all sized at a constant
+    base_risk_pct per trade and assumed sequential (not modeling true
+    concurrency - a known v1 simplification). Used for two things computed
+    from the same resampled paths:
+
+    - Drawdown calibration bands (P10/P50/P90 of each path's max drawdown %)
+      that the live drawdown throttle compares the realized equity curve
+      against.
+    - Risk of ruin: the fraction of paths whose equity ever falls below
+      (1 + ruin_threshold_pct/100) of the starting value.
+
+    Returns {"drawdown_p10", "drawdown_p50", "drawdown_p90" (all positive
+    magnitudes, %), "risk_of_ruin_pct"}. All zero if there's no valid
+    R-multiple history to resample from.
+    """
+    r = np.array([x for x in r_multiples if x is not None and pd.notna(x)], dtype=float)
+    if len(r) == 0:
+        return {"drawdown_p10": 0.0, "drawdown_p50": 0.0, "drawdown_p90": 0.0, "risk_of_ruin_pct": 0.0}
+
+    rng = np.random.default_rng(seed)
+    n = path_length or len(r)
+    ruin_level = 1 + ruin_threshold_pct / 100
+    max_drawdowns = np.empty(n_simulations)
+    ruin_count = 0
+
+    for i in range(n_simulations):
+        sample = rng.choice(r, size=n, replace=True)
+        equity_path = np.cumprod(1 + (base_risk_pct / 100) * sample)
+        running_peak = np.maximum.accumulate(np.concatenate(([1.0], equity_path)))[1:]
+        drawdowns = (equity_path - running_peak) / running_peak
+        max_drawdowns[i] = abs(drawdowns.min()) * 100
+        if (equity_path <= ruin_level).any():
+            ruin_count += 1
+
+    return {
+        "drawdown_p10": float(np.percentile(max_drawdowns, 10)),
+        "drawdown_p50": float(np.percentile(max_drawdowns, 50)),
+        "drawdown_p90": float(np.percentile(max_drawdowns, 90)),
+        "risk_of_ruin_pct": ruin_count / n_simulations * 100,
+    }
+
+
+def calculate_var(returns_pct, confidence=0.95, method="historical", n_simulations=2000,
+                   horizon_trades=1, seed=None):
+    """Value at Risk (and Conditional VaR / Expected Shortfall) from the
+    historical distribution of a trade's own realized entry-to-exit % return
+    (ProfitRs - "the historical data of the return made on the entry and
+    the exit", per trade).
+
+    VaR_pct at confidence C is the loss threshold such that C% of
+    historical outcomes were no worse than it - i.e. -1x the (1-C)
+    percentile of the return distribution. CVaR_pct (Expected Shortfall) is
+    the average loss *conditional on* being in that worst (1-C)% tail - a
+    harsher, and more informative, number than VaR alone since VaR itself
+    says nothing about how bad the tail beyond it gets.
+
+    method="historical" (default): classic historical simulation - use the
+    actual realized returns directly, no resampling. Only as reliable as
+    the sample is large; with few trades the tail percentile is noisy.
+
+    method="monte_carlo": bootstrap-resample the same historical returns
+    (with replacement) into n_simulations synthetic sequences of
+    horizon_trades trades each, compounded - smooths historical sampling
+    noise and extends to a multi-trade horizon (horizon_trades > 1) rather
+    than being limited to whatever single-trade outcomes actually occurred.
+    With horizon_trades=1 this converges to the historical method's number
+    as n_simulations grows, just resampled.
+
+    Returns {"VaR_pct", "CVaR_pct", "sample_size"} - both nan if there's no
+    usable return history.
+    """
+    valid = np.array([r for r in returns_pct if r is not None and pd.notna(r)], dtype=float)
+    if len(valid) == 0:
+        return {"VaR_pct": float("nan"), "CVaR_pct": float("nan"), "sample_size": 0}
+
+    alpha = 1 - confidence
+
+    if method == "monte_carlo":
+        rng = np.random.default_rng(seed)
+        samples = rng.choice(valid, size=(n_simulations, horizon_trades), replace=True)
+        outcome_pct = (np.prod(1 + samples / 100, axis=1) - 1) * 100
+    else:
+        outcome_pct = valid
+
+    threshold = np.percentile(outcome_pct, alpha * 100)
+    var_pct = max(-float(threshold), 0.0)
+
+    tail = outcome_pct[outcome_pct <= threshold]
+    cvar_pct = max(-float(tail.mean()), 0.0) if len(tail) > 0 else var_pct
+
+    return {"VaR_pct": var_pct, "CVaR_pct": cvar_pct, "sample_size": int(len(valid))}
+
+
+def compute_var_report(trades_df, portfolio_equity, confidence_levels=(0.95, 0.99), method="historical",
+                        n_simulations=2000, horizon_trades=1, min_trades_per_symbol=5, seed=None):
+    """VaR/CVaR at the portfolio level (every trade's own ProfitRs, i.e. the
+    strategy's overall entry-to-exit return distribution - unweighted by
+    whether capital was actually available to fund it, since this measures
+    the asset/strategy's inherent risk, not the sizing engine's behavior)
+    and per-symbol (only for symbols with at least min_trades_per_symbol
+    trades - the percentile of a handful of trades isn't meaningful).
+
+    Rs amounts translate the portfolio-level % into money using
+    portfolio_equity (what's actually at stake), and the per-symbol %
+    into money using that symbol's own average AllocatedCapital where
+    available (i.e. only from trades that were actually funded).
+
+    Returns {"portfolio": {"95": {...}, "99": {...}}, "by_symbol": DataFrame,
+    "method", "horizon_trades"}.
+    """
+    portfolio_var = {}
+    for conf in confidence_levels:
+        stats = calculate_var(
+            trades_df["ProfitRs"].tolist(), confidence=conf, method=method,
+            n_simulations=n_simulations, horizon_trades=horizon_trades, seed=seed,
+        )
+        key = f"{conf * 100:.0f}"
+        portfolio_var[key] = {
+            **stats,
+            "VaR_rs": round(stats["VaR_pct"] / 100 * portfolio_equity, 2) if pd.notna(stats["VaR_pct"]) else None,
+            "CVaR_rs": round(stats["CVaR_pct"] / 100 * portfolio_equity, 2) if pd.notna(stats["CVaR_pct"]) else None,
+        }
+
+    rows = []
+    if "Symbol" in trades_df.columns:
+        for symbol, group in trades_df.groupby("Symbol"):
+            if len(group) < min_trades_per_symbol:
+                continue
+            funded_group = group[group["Funded"] == True] if "Funded" in group.columns else group
+            avg_allocated = funded_group["AllocatedCapital"].mean() if "AllocatedCapital" in funded_group.columns and not funded_group.empty else None
+
+            row = {"Symbol": symbol, "Trades": len(group)}
+            for conf in confidence_levels:
+                stats = calculate_var(
+                    group["ProfitRs"].tolist(), confidence=conf, method=method,
+                    n_simulations=n_simulations, horizon_trades=horizon_trades, seed=seed,
+                )
+                key = f"{conf * 100:.0f}"
+                row[f"VaR{key}_pct"] = round(stats["VaR_pct"], 2) if pd.notna(stats["VaR_pct"]) else None
+                row[f"CVaR{key}_pct"] = round(stats["CVaR_pct"], 2) if pd.notna(stats["CVaR_pct"]) else None
+                row[f"VaR{key}_rs"] = (
+                    round(stats["VaR_pct"] / 100 * avg_allocated, 2)
+                    if avg_allocated is not None and pd.notna(stats["VaR_pct"]) else None
+                )
+            rows.append(row)
+
+    sort_col = f"VaR{confidence_levels[0] * 100:.0f}_pct"
+    by_symbol_df = pd.DataFrame(rows)
+    if not by_symbol_df.empty and sort_col in by_symbol_df.columns:
+        by_symbol_df = by_symbol_df.sort_values(sort_col, ascending=False).reset_index(drop=True)
+
+    return {"portfolio": portfolio_var, "by_symbol": by_symbol_df, "method": method, "horizon_trades": horizon_trades}
+
+
+def simulate_portfolio(
+    trades_df,
+    price_data=None,
+    initial_capital=100000.0,
+    max_concurrent_positions=10,
+    sizing_mode="equal_weight",
+    half_kelly_cap_pct=2.0,
+    min_trades_for_kelly=20,
+    default_risk_pct=1.0,
+    portfolio_heat_cap_pct=6.0,
+    sector_heat_cap_pct=3.0,
+    vol_multiplier_bounds=(0.5, 1.5),
+    breadth_multiplier_bounds=(0.5, 1.0),
+    mc_simulations=2000,
+    mc_ruin_threshold_pct=-50.0,
+    ruin_tolerance_pct=5.0,
+    min_viable_position_rs=500.0,
+):
     """
     Simulates a real, capital-constrained portfolio on top of the already
     fully-resolved trade list from run_backtest() (each trade's entry/exit
     dates and % return are computed independently of capital - this
     function only decides which signals the portfolio actually had room to
-    fund, and compounds capital as positions open and close).
+    fund, how big to size them, and compounds capital as positions open and
+    close).
 
-    Position sizing: each newly funded trade gets
-    (current total equity) / max_concurrent_positions - an equal-weight
-    slot recomputed fresh each time, so position size compounds with
-    portfolio growth. When more signals fire on a day than there are free
-    slots, higher ClosenessScore gets priority; the rest are marked
-    unfunded (skipped for lack of capital), not opened at a smaller size.
+    Walks every calendar trading day present in price_data (not just
+    entry/exit event dates), so open positions are revalued against daily
+    closes and portfolio_df is a true daily mark-to-market equity curve. If
+    price_data is omitted, falls back to the coarser event-only date walk
+    (equity only sampled at entry/exit dates) for backward compatibility.
 
-    Returns (portfolio_df, trades_df) where portfolio_df is a chronological
-    equity curve (Date, Equity) and trades_df is the input with two added
-    columns: Funded (bool) and AllocatedCapital (float).
+    sizing_mode="equal_weight" (default) preserves the original behavior
+    exactly: each newly funded trade gets (current total equity) /
+    max_concurrent_positions, a slot recomputed fresh each time. When more
+    signals fire on a day than there are free slots, higher ClosenessScore
+    gets priority; the rest are marked unfunded.
+
+    sizing_mode="risk" replaces the sizing formula with a half-Kelly,
+    risk-based engine (see _kelly_base_risk_pct and run_monte_carlo):
+    base risk % from walk-forward Kelly stats on closed trades' R-multiples,
+    adjusted by a volatility-ratio multiplier (current ATR vs its own
+    60-day average), a market-breadth multiplier, and a drawdown-throttle
+    multiplier (calibrated against Monte Carlo drawdown bands) - then capped
+    by portfolio and sector "heat" (total capital-at-risk to initial stops,
+    as a % of equity). A trade that would breach a heat cap is shrunk to
+    the remaining headroom rather than skipped outright; it's only skipped
+    if the shrunk size falls below min_viable_position_rs. The
+    max_concurrent_positions gate and ClosenessScore priority ordering are
+    unchanged pre-filters in both modes.
+
+    Returns (portfolio_df, trades_df, risk_info). portfolio_df is a
+    chronological equity curve (Date, Equity, PortfolioHeatPct - the last
+    column present but 0 in equal_weight mode). trades_df is the input with
+    added columns: Funded, AllocatedCapital (both modes), and in risk mode
+    also BaseRiskPct, VolMultiplier, BreadthMultiplier,
+    DrawdownThrottleMultiplier, FinalRiskPct, DollarRiskAllocated,
+    PortfolioHeatAtEntry, SectorHeatAtEntry, CapBreached, SizingRationale.
+    risk_info holds the Monte Carlo drawdown bands and risk-of-ruin used to
+    calibrate the run (empty dict in equal_weight mode).
     """
     trades = trades_df.copy()
+    risk_info = {}
     if trades.empty:
         trades["Funded"] = pd.Series(dtype=bool)
         trades["AllocatedCapital"] = pd.Series(dtype=float)
-        return pd.DataFrame(columns=["Date", "Equity"]), trades
+        return pd.DataFrame(columns=["Date", "Equity", "PortfolioHeatPct"]), trades, risk_info
 
     trades["EntryDate"] = pd.to_datetime(trades["EntryDate"])
     trades["ExitDate"] = pd.to_datetime(trades["ExitDate"])
@@ -384,50 +701,254 @@ def simulate_portfolio(trades_df, initial_capital=100000.0, max_concurrent_posit
     for idx, row in trades.iterrows():
         entries_by_date.setdefault(row["EntryDate"], []).append(idx)
 
+    # Full daily trading calendar for mark-to-market, restricted to the
+    # trades' own date span (no point revaluing before the first entry or
+    # after the last exit). Falls back to event-only dates if no price data
+    # was supplied.
+    if price_data:
+        span_start, span_end = trades["EntryDate"].min(), trades["ExitDate"].max()
+        calendar_dates = sorted({
+            ts.normalize() for df in price_data.values() for ts in df.index
+            if span_start <= ts <= span_end
+        })
+        # Per-symbol close price reindexed to the full calendar, forward
+        # filled so a symbol's price on a day it didn't trade (holiday,
+        # gap) still has a usable last-known value for revaluation.
+        close_by_symbol = {
+            symbol: df["close"].reindex(pd.DatetimeIndex(calendar_dates), method="ffill")
+            for symbol, df in price_data.items()
+        }
+    else:
+        calendar_dates = sorted(set(trades["EntryDate"]).union(trades["ExitDate"]))
+        close_by_symbol = {}
+
+    risk_mode = sizing_mode == "risk"
+
+    # Pre-loop Monte Carlo pass (once per run, not per-day - see
+    # run_monte_carlo docstring) using the full trade set's R-multiples at
+    # the flat default_risk_pct, to calibrate: (a) drawdown throttle bands,
+    # (b) a one-time risk-of-ruin check that scales down every subsequent
+    # Kelly-derived risk % for the rest of the run if the strategy's
+    # historical edge implies an unacceptably high chance of ruin at that
+    # risk level.
+    ruin_scale = 1.0
+    dd_p50 = dd_p90 = None
+    if risk_mode:
+        mc = run_monte_carlo(
+            trades["RMultiple"].tolist(),
+            base_risk_pct=default_risk_pct,
+            n_simulations=mc_simulations,
+            ruin_threshold_pct=mc_ruin_threshold_pct,
+        )
+        risk_info = mc
+        dd_p50, dd_p90 = mc["drawdown_p50"], mc["drawdown_p90"]
+        if mc["risk_of_ruin_pct"] > ruin_tolerance_pct:
+            ruin_scale = 0.5
+
     cash = initial_capital
-    open_positions = {}  # idx -> allocated capital
+    open_positions = {}  # idx -> {"allocated": Rs, "entry_price": float, "initial_sl": float or None, "sector": str}
     funded = {}
     allocated = {}
+    closed_r_multiples = []  # walk-forward, only trades closed strictly before "today"
+    running_peak_equity = initial_capital
+    extra_cols = {col: {} for col in [
+        "BaseRiskPct", "VolMultiplier", "BreadthMultiplier", "DrawdownThrottleMultiplier",
+        "FinalRiskPct", "DollarRiskAllocated", "PortfolioHeatAtEntry", "SectorHeatAtEntry",
+        "CapBreached", "SizingRationale",
+    ]}
     equity_curve = []
 
-    all_dates = sorted(set(trades["EntryDate"]).union(trades["ExitDate"]))
-    for date in all_dates:
+    def position_risk_dollars(pos):
+        """Capital-at-risk if this open position hit its initial stop,
+        using InitialSL as the conservative risk basis (the live trailing
+        stop tightens over the trade's life but isn't exposed by the exit
+        contract as a day-by-day series - a v1 simplification)."""
+        if pos["initial_sl"] is None or pos["entry_price"] <= 0:
+            return 0.0
+        return pos["allocated"] * max(0.0, pos["entry_price"] - pos["initial_sl"]) / pos["entry_price"]
+
+    for date in calendar_dates:
         # Exits before entries on the same day, so freed capital is
         # available for same-day reinvestment.
         exits_today = trades.index[trades["ExitDate"] == date]
         for idx in exits_today:
             if funded.get(idx):
                 profit_pct = trades.loc[idx, "ProfitRs"]
-                cash += open_positions.pop(idx) * (1 + profit_pct / 100)
+                cash += open_positions.pop(idx)["allocated"] * (1 + profit_pct / 100)
+                r_mult = trades.loc[idx, "RMultiple"] if "RMultiple" in trades.columns else None
+                closed_r_multiples.append(r_mult)
 
         entries_today = sorted(
             entries_by_date.get(date, []),
             key=lambda i: trades.loc[i, "ClosenessScore"],
             reverse=True,
         )
+
+        current_total_equity = cash + sum(p["allocated"] for p in open_positions.values())
+        current_portfolio_heat_rs = sum(position_risk_dollars(p) for p in open_positions.values())
+
+        if risk_mode:
+            base_risk_pct = _kelly_base_risk_pct(
+                closed_r_multiples, min_trades_for_kelly, default_risk_pct, half_kelly_cap_pct
+            ) * ruin_scale
+
         for idx in entries_today:
             if len(open_positions) >= max_concurrent_positions:
                 funded[idx] = False
                 continue
-            total_equity = cash + sum(open_positions.values())
-            size = total_equity / max_concurrent_positions
-            if size <= cash:
-                open_positions[idx] = size
-                cash -= size
-                funded[idx] = True
-                allocated[idx] = size
-            else:
-                funded[idx] = False
 
-        equity_curve.append({"Date": date, "Equity": cash + sum(open_positions.values())})
+            row = trades.loc[idx]
+            entry_price = float(row["EntryPrice"])
+
+            if not risk_mode:
+                size = current_total_equity / max_concurrent_positions
+                if size <= cash:
+                    open_positions[idx] = {
+                        "allocated": size, "entry_price": entry_price,
+                        "initial_sl": row.get("InitialSL"), "sector": row.get("Sector"),
+                    }
+                    cash -= size
+                    funded[idx] = True
+                    allocated[idx] = size
+                    current_total_equity = cash + sum(p["allocated"] for p in open_positions.values())
+                else:
+                    funded[idx] = False
+                continue
+
+            # --- Risk-based sizing ---
+            initial_sl = row.get("InitialSL")
+            risk_per_share_ratio = (
+                (entry_price - initial_sl) / entry_price
+                if initial_sl is not None and entry_price > 0 and entry_price > initial_sl
+                else None
+            )
+            if risk_per_share_ratio is None:
+                # No valid risk basis (shouldn't happen once InitialSL is
+                # always populated, but guards a malformed/regenerated exit
+                # strategy from silently sizing off garbage).
+                funded[idx] = False
+                extra_cols["CapBreached"][idx] = "NoRiskBasis"
+                continue
+
+            atr_entry, atr_avg60 = row.get("ATR_Entry"), row.get("ATR_Avg60")
+            if atr_entry and atr_avg60 and atr_avg60 > 0:
+                vol_ratio = atr_entry / atr_avg60
+                vol_multiplier = min(max(1 / vol_ratio, vol_multiplier_bounds[0]), vol_multiplier_bounds[1])
+            else:
+                vol_multiplier = 1.0  # neutral - insufficient ATR history
+
+            breadth = row.get("MarketBreadthAtEntry")
+            if breadth is not None and pd.notna(breadth):
+                # Linear scale from the entry-gate threshold (45) to a
+                # "strong breadth" reference (80) into the configured bounds.
+                breadth_multiplier = breadth_multiplier_bounds[0] + (
+                    breadth_multiplier_bounds[1] - breadth_multiplier_bounds[0]
+                ) * min(max((breadth - 45) / (80 - 45), 0.0), 1.0)
+            else:
+                breadth_multiplier = 1.0
+
+            if dd_p50 is not None and dd_p90 is not None and dd_p90 > dd_p50:
+                current_dd_pct = abs(
+                    (current_total_equity - running_peak_equity) / running_peak_equity
+                ) * 100 if running_peak_equity > 0 else 0.0
+                if current_dd_pct <= dd_p50:
+                    throttle_multiplier = 1.0
+                elif current_dd_pct <= dd_p90:
+                    throttle_multiplier = 1.0 - 0.5 * (current_dd_pct - dd_p50) / (dd_p90 - dd_p50)
+                else:
+                    throttle_multiplier = 0.25
+            else:
+                throttle_multiplier = 1.0
+
+            final_risk_pct = min(
+                base_risk_pct * vol_multiplier * breadth_multiplier * throttle_multiplier,
+                half_kelly_cap_pct,
+            )
+            dollar_risk = final_risk_pct / 100 * current_total_equity
+
+            sector = row.get("Sector")
+            sector_heat_rs = sum(
+                position_risk_dollars(p) for p in open_positions.values() if p["sector"] == sector
+            )
+            portfolio_headroom = max(0.0, portfolio_heat_cap_pct / 100 * current_total_equity - current_portfolio_heat_rs)
+            sector_headroom = max(0.0, sector_heat_cap_pct / 100 * current_total_equity - sector_heat_rs)
+            headroom = min(portfolio_headroom, sector_headroom)
+
+            cap_breached = "None"
+            if dollar_risk > headroom:
+                cap_breached = "Both" if headroom == sector_headroom and headroom == portfolio_headroom else (
+                    "Portfolio" if headroom == portfolio_headroom else "Sector"
+                )
+                dollar_risk = headroom
+
+            position_size_rs = min(dollar_risk / risk_per_share_ratio, cash)
+
+            if position_size_rs < min_viable_position_rs:
+                funded[idx] = False
+                extra_cols["CapBreached"][idx] = cap_breached if cap_breached != "None" else "MinSize"
+                continue
+
+            open_positions[idx] = {
+                "allocated": position_size_rs, "entry_price": entry_price,
+                "initial_sl": initial_sl, "sector": sector,
+            }
+            cash -= position_size_rs
+            funded[idx] = True
+            allocated[idx] = position_size_rs
+            current_total_equity = cash + sum(p["allocated"] for p in open_positions.values())
+            current_portfolio_heat_rs += position_size_rs * risk_per_share_ratio
+
+            extra_cols["BaseRiskPct"][idx] = round(base_risk_pct, 3)
+            extra_cols["VolMultiplier"][idx] = round(vol_multiplier, 3)
+            extra_cols["BreadthMultiplier"][idx] = round(breadth_multiplier, 3)
+            extra_cols["DrawdownThrottleMultiplier"][idx] = round(throttle_multiplier, 3)
+            extra_cols["FinalRiskPct"][idx] = round(final_risk_pct, 3)
+            extra_cols["DollarRiskAllocated"][idx] = round(position_size_rs * risk_per_share_ratio, 2)
+            extra_cols["PortfolioHeatAtEntry"][idx] = round(current_portfolio_heat_rs / current_total_equity * 100, 2) if current_total_equity > 0 else 0.0
+            extra_cols["SectorHeatAtEntry"][idx] = round(
+                sum(position_risk_dollars(p) for p in open_positions.values() if p["sector"] == sector)
+                / current_total_equity * 100, 2
+            ) if current_total_equity > 0 else 0.0
+            extra_cols["CapBreached"][idx] = cap_breached
+            extra_cols["SizingRationale"][idx] = (
+                f"Kelly {base_risk_pct:.2f}% x vol {vol_multiplier:.2f} x breadth {breadth_multiplier:.2f} "
+                f"x DD-throttle {throttle_multiplier:.2f} = {final_risk_pct:.2f}%"
+                + (f", {cap_breached.lower()}-capped" if cap_breached != "None" else "")
+            )
+
+        # Daily mark-to-market: revalue every still-open position at
+        # today's close (falls back to the allocated capital unchanged if
+        # no price data was supplied, i.e. the event-only legacy mode).
+        if close_by_symbol:
+            position_value_total = 0.0
+            for idx, pos in open_positions.items():
+                symbol = trades.loc[idx, "Symbol"]
+                today_close = close_by_symbol.get(symbol, pd.Series(dtype=float)).get(date)
+                if today_close is not None and pd.notna(today_close) and pos["entry_price"] > 0:
+                    position_value_total += pos["allocated"] * (today_close / pos["entry_price"])
+                else:
+                    position_value_total += pos["allocated"]
+        else:
+            position_value_total = sum(p["allocated"] for p in open_positions.values())
+
+        today_equity = cash + position_value_total
+        running_peak_equity = max(running_peak_equity, today_equity)
+        portfolio_heat_pct = (
+            sum(position_risk_dollars(p) for p in open_positions.values()) / today_equity * 100
+            if risk_mode and today_equity > 0 else 0.0
+        )
+        equity_curve.append({"Date": date, "Equity": today_equity, "PortfolioHeatPct": round(portfolio_heat_pct, 2)})
 
     trades["Funded"] = trades.index.map(lambda i: funded.get(i, False))
     trades["AllocatedCapital"] = trades.index.map(lambda i: round(allocated.get(i, 0.0), 2))
+    if risk_mode:
+        for col, values in extra_cols.items():
+            trades[col] = trades.index.map(lambda i: values.get(i))
     trades["EntryDate"] = trades["EntryDate"].dt.date
     trades["ExitDate"] = trades["ExitDate"].dt.date
 
     portfolio_df = pd.DataFrame(equity_curve)
-    return portfolio_df, trades
+    return portfolio_df, trades, risk_info
 
 
 def summarize_trades(trades_df):
@@ -468,19 +989,49 @@ def main():
     parser.add_argument("--trades-out", default="backtest_trades.csv")
     parser.add_argument("--summary-out", default="backtest_summary.csv")
     parser.add_argument("--portfolio-out", default="backtest_portfolio.csv")
+    parser.add_argument("--sizing-mode", choices=["equal_weight", "risk"], default="equal_weight",
+                         help="'equal_weight' (default, original behavior) or 'risk' for half-Kelly risk-based sizing")
+    parser.add_argument("--half-kelly-cap-pct", type=float, default=2.0)
+    parser.add_argument("--min-trades-for-kelly", type=int, default=20)
+    parser.add_argument("--default-risk-pct", type=float, default=1.0)
+    parser.add_argument("--portfolio-heat-cap-pct", type=float, default=6.0)
+    parser.add_argument("--sector-heat-cap-pct", type=float, default=3.0)
+    parser.add_argument("--mc-simulations", type=int, default=2000)
+    parser.add_argument("--mc-ruin-threshold-pct", type=float, default=-50.0)
+    parser.add_argument("--trades-in", default=None,
+                         help="Reuse an already-resolved trades CSV (from a prior run over the same date range) "
+                              "instead of re-running signal generation - only re-simulates portfolio sizing. "
+                              "Lets equal_weight and risk sizing be compared on the identical trade set cheaply.")
+    parser.add_argument("--risk-info-out", default=None,
+                         help="If given (sizing_mode=risk only), writes the Monte Carlo drawdown-band/"
+                              "risk-of-ruin summary as JSON to this path.")
     args = parser.parse_args()
 
     def progress(done, total, day):
         print(f"Evaluating day {done}/{total} ({day})...")
 
-    trades_df, summary_df = run_backtest(
-        args.start, args.end,
-        limit_per_sector=args.limit_per_sector,
-        progress_callback=progress,
-    )
+    if args.trades_in:
+        trades_df = pd.read_csv(args.trades_in)
+        summary_df = summarize_trades(trades_df)
+        _, price_data = load_price_data(args.start, args.end, limit_per_sector=args.limit_per_sector)
+    else:
+        trades_df, summary_df, price_data = run_backtest(
+            args.start, args.end,
+            limit_per_sector=args.limit_per_sector,
+            progress_callback=progress,
+        )
 
-    portfolio_df, trades_df = simulate_portfolio(
-        trades_df, initial_capital=args.initial_capital, max_concurrent_positions=args.max_positions
+    portfolio_df, trades_df, risk_info = simulate_portfolio(
+        trades_df, price_data=price_data,
+        initial_capital=args.initial_capital, max_concurrent_positions=args.max_positions,
+        sizing_mode=args.sizing_mode,
+        half_kelly_cap_pct=args.half_kelly_cap_pct,
+        min_trades_for_kelly=args.min_trades_for_kelly,
+        default_risk_pct=args.default_risk_pct,
+        portfolio_heat_cap_pct=args.portfolio_heat_cap_pct,
+        sector_heat_cap_pct=args.sector_heat_cap_pct,
+        mc_simulations=args.mc_simulations,
+        mc_ruin_threshold_pct=args.mc_ruin_threshold_pct,
     )
 
     trades_df.to_csv(args.trades_out, index=False)
@@ -495,10 +1046,18 @@ def main():
         total_return_pct = (final_equity - args.initial_capital) / args.initial_capital * 100
         funded_count = int(trades_df["Funded"].sum())
         skipped_count = len(trades_df) - funded_count
-        print(f"\n--- PORTFOLIO ({args.max_positions} concurrent slots, Rs.{args.initial_capital:,.0f} start) ---")
-        print(f"Funded trades: {funded_count} (skipped for lack of capital: {skipped_count})")
+        print(f"\n--- PORTFOLIO ({args.max_positions} concurrent slots, Rs.{args.initial_capital:,.0f} start, sizing_mode={args.sizing_mode}) ---")
+        print(f"Funded trades: {funded_count} (skipped for lack of capital/risk caps: {skipped_count})")
         print(f"Final equity: Rs.{final_equity:,.2f}")
         print(f"Total return: {total_return_pct:.2f}%")
+        if risk_info:
+            print(f"Monte Carlo ({args.mc_simulations} paths) drawdown bands: "
+                  f"P50={risk_info['drawdown_p50']:.1f}% P90={risk_info['drawdown_p90']:.1f}% | "
+                  f"Risk of ruin: {risk_info['risk_of_ruin_pct']:.2f}%")
+
+    if args.risk_info_out and risk_info:
+        with open(args.risk_info_out, "w", encoding="utf-8") as f:
+            json.dump(risk_info, f, indent=2)
 
     print(f"\nTrades saved to {args.trades_out}")
     print(f"Summary saved to {args.summary_out}")

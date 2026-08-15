@@ -29,4 +29,9 @@ Strategies/Default/backtest_summary.csv
 Strategies/Default/backtest_portfolio.csv
 Strategies/Default/backtest_cache/
 Strategies/Default/backtest_run.log
+Strategies/Default/backtest_trades_risk.csv
+Strategies/Default/backtest_summary_risk.csv
+Strategies/Default/backtest_portfolio_risk.csv
+Strategies/Default/backtest_risk_info.json
+Strategies/Default/backtest_risk_run.log
 Strategies/universe_cache.json

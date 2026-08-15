@@ -122,4 +122,17 @@ Only one exit tag is assigned per trade.
 If no condition above triggers before the available data ends, do not exit -
 the backtester itself force-closes any still-open trade at the last
 available close, tagged "RangeEnd". Exit strategies never need to implement
-this fallback themselves.
+this fallback themselves - but MUST still report Initial_SL back to the
+caller in this case (see Return Contract below), since the backtester uses
+it to size positions by risk, not just to decide when to exit.
+
+---
+
+## Return Contract
+
+resolve_exit() must return a dict containing Initial_SL (from the Pre-Trade
+Calculation above) whenever it was computable - in every case, whether an
+exit condition fired, the max holding period was hit, or the available data
+simply ran out with no exit ever triggering. Only return None if Initial_SL
+itself could not be computed (insufficient history at entry), per the note
+in Pre-Trade Calculation.
