@@ -16,6 +16,13 @@ fetches per stock. Don't invent a metric it has no way to calculate. You have:
   `close`, `volume`. You can reference relative days like `Volume[-1]`
   (yesterday), `Volume[-2]` (the day before), or ranges like `HighestHigh(252)`
   (highest high over the last 252 trading days ≈ 1 year).
+- **Delivery percentage** (`delivery_pct`) — NSE's published % of traded
+  volume that actually settled as delivery (vs. intraday-only churn), same
+  ~400-day history as OHLCV. A high delivery % on a strong-volume day is a
+  proxy for genuine buying (investors taking the stock home) rather than
+  speculative intraday flow that's likely to reverse. May be `NaN` for
+  cached history fetched before this field was tracked - handle missing
+  values rather than assuming it's always present.
 - **Standard technical indicators** computed from that price history — RSI,
   moving averages, etc. (the generator uses `pandas_ta`, so anything that
   library supports is fair game).

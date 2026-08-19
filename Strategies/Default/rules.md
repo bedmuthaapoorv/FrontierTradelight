@@ -2,10 +2,10 @@
 
 ## Strategy Metadata
 
-Strategy Name: Trendline Bounce Confirmation v1
+Strategy Name: Breakout Momentum v6
 Market: India (NSE/BSE)
 Timeframe: Daily
-Holding Period: Swing Trade (5-40 Days)
+Holding Period: Trend Trade (1-90 Days)
 
 ---
 
@@ -24,39 +24,28 @@ computable from OHLCV + SectorRank + MarketBreadth alone.
 
 ## Strategy Rationale
 
-The prior trendline strategy in this project ("Trendline Support
-Momentum") failed - both because a placeholder value stood in for the
-actual trendline geometry, and because even after fixing that, the
-underlying idea was too weak: it treated "price is near a rising
-trendline" as a signal by itself. It isn't. A trendline only tells you
-where a stock *might* find support - it says nothing about whether it
-actually will. Buying every touch of a support line, with no confirmation
-that the bounce is real, is buying into every attempt at a bounce,
-including the ones that fail and break down through it.
+v3 was a pullback-to-support strategy (buy near a recent low, in an
+uptrend). Backtesting showed ~80%+ of v3 trades were stopped out shortly
+after entry regardless of stop width, while the rare trades that survived
+to the max holding period were consistently profitable. This points to a
+mismatch: buying near a recent low is more often a failing bounce than a
+genuine trend resumption, which is exactly what a wide ATR trailing stop
+chops up. v4 flipped the entry philosophy to a breakout: buy stocks pushing
+to new short-term highs on strong volume, in a confirmed uptrend.
 
-This version treats the trendline as a *passive filter* (a location worth
-paying attention to) and requires a separate *active trigger* (evidence
-the bounce is actually happening) before entering - the same separation a
-discretionary trader would make between "watching a level" and "taking the
-trade." Four design choices follow from that:
+v5 removed the fixed take-profit from the exit strategy (see
+exit_rules.md) so winning trades aren't capped - trend-following systems
+earn their edge from a few large winners paying for many small losers, and
+a fixed take-profit destroys that asymmetry. This flipped the 3-year
+backtest from net negative to slightly net positive, but the win rate
+stayed stuck around 35% regardless of entry tuning.
 
-1. **Multiple touches, not two.** Two touches can define a line through
-   almost any two points; three or more spaced-apart touches is what
-   distinguishes a real trendline from a line that happens to fit noise.
-2. **ATR-normalized proximity, not a flat percentage.** A 3% band means
-   something very different for a low-volatility large-cap than a
-   volatile mid-cap. Measuring proximity in ATR units instead keeps the
-   "how close counts as a touch" threshold consistent across different
-   stocks' volatility.
-3. **A bounce confirmation trigger.** Price must be near the trendline
-   *and* today must show an actual reversal - an up day on above-average
-   volume - before this counts as a signal. This is the single biggest
-   change from the failed version: it turns a passive "is it near
-   support" check into an active "is it bouncing right now" check.
-4. **Trend context.** Support only means something inside an existing
-   uptrend. This requires price above a rising 100-day average, so the
-   line being traded is a pullback within a trend, not a dead-cat bounce
-   inside a longer decline that happens to have a rising line under it.
+v6 adds a market-breadth filter: pause new entries when the broader
+universe itself is broad-based weak (few stocks above their own 50-day
+average), since even a good individual breakout setup tends to fail when
+the overall market is correcting. This is a stand-in for the Nifty-based
+market-regime filter real trend traders use, built entirely from data this
+pipeline already has.
 
 ---
 
@@ -69,8 +58,8 @@ All rules below MUST pass.
 ### Rule 1: Minimum Liquidity Floor
 
 Description:
-Reject illiquid stocks so signals are meaningful and exits are executable
-without slippage.
+Reject illiquid stocks so volume signals are meaningful and exits are
+executable without slippage.
 
 Condition:
 
@@ -78,140 +67,123 @@ MA(Volume, 20) >= 100000
 AND
 Close >= 50
 
+Notes:
+- Kept deliberately loose since the universe is already Nifty-50-derived
+  (large, liquid names) - this should rarely bind, it's a safety floor.
+
 ---
 
-### Rule 2: Uptrend Context
+### Rule 2: Trend Structure (Moving Average Stack)
 
 Description:
-A pullback to support only means something if the stock is actually in an
-uptrend. Requires price above a rising medium-term average.
+Confirm the stock is in a genuine multi-timeframe uptrend using a moving
+average stack.
 
 Condition:
 
-Close > MA(100)
+Close > MA(20)
 AND
-MA(100) > MA(100)[-10]
+MA(20) > MA(50)
+AND
+MA(50) > MA(126)
 
 Notes:
-- MA(100)[-10] means the 100-day moving average's value 10 trading days
-  ago - requiring the current MA to be higher than that confirms the
-  average itself is rising, not flat or falling.
+- This is the core trend filter: price above a rising short-term average,
+  which is above a rising medium-term average, which is above a rising
+  long-term (6-month) average.
 
 ---
 
-### Rule 3: Ascending Trendline Detection
+### Rule 3: Daily RSI Range (Strength Zone)
 
 Description:
-Find a genuine rising support trendline under the stock's recent price
-action, using pivot lows over the last 100 trading days - not a
-placeholder or approximation. This is the core, most failure-prone rule in
-this strategy: implement the actual geometry below, do not substitute a
-fixed/hardcoded distance value for any part of it.
-
-Algorithm (implement exactly):
-
-1. Over the last 100 trading days of `low` prices, find pivot lows: a day
-   is a pivot low if its `low` is less than or equal to the `low` of the
-   4 trading days before AND the 4 trading days after it (a local minimum
-   using a window of 4 on each side). Standard local-extrema detection
-   (e.g. scipy.signal.argrelextrema with order=4) is the expected
-   implementation - do not hand-roll a simplified/dummy version.
-2. For every pair of pivot lows that are at least 10 trading days apart,
-   fit a straight line through them (slope and intercept over the pivot's
-   day-index within the 100-day window).
-3. Discard any candidate line with a non-positive slope (must be
-   ascending).
-4. Count how many OTHER pivot lows also lie within 1.0x ATR(14) of that
-   line's projected value at their day-index - these are the line's
-   "touches" (including the two anchor points).
-5. Keep the candidate line with the most touches. Require at least 3
-   touches total. If no candidate qualifies, this rule fails for the
-   stock - it has no ascending trendline.
-6. Reject if any close price in the 100-day window fell more than 1.5x
-   ATR(14) below the line's projected value at that day - that is a
-   breakdown, meaning the "support" didn't actually hold.
-
-Condition:
-
-TrendlineTouches >= 3
-AND
-TrendlineSlope > 0
-AND
-NoBreakdownBelowLine(100 days, tolerance = 1.5x ATR(14))
-
-Notes:
-- ATR(14) should be computed once (today's value) and used as the unit of
-  distance throughout steps 4 and 6, not recomputed per pivot.
-- If fewer than 100 days of history are available, or fewer than 4 pivot
-  lows exist, this rule fails (insufficient data for a reliable line, not
-  an error).
-
----
-
-### Rule 4: Bounce Confirmation (Active Trigger)
-
-Description:
-A stock sitting near its trendline is not a signal on its own - this rule
-requires evidence the bounce is actually happening today, not just that
-the stock is in the right location. This is what separates this strategy
-from the failed prior version, which had no confirmation trigger at all.
-
-Condition:
-
-Low <= TrendlineProjectedValueToday + (1.0 * ATR(14))
-AND
-Close > Close[-1]
-AND
-Volume[-1] >= 1.2 * MA(Volume, 20)
-
-Where:
-TrendlineProjectedValueToday = the trendline found in Rule 3, evaluated at
-today's day-index.
-
-Notes:
-- "Low <= trendline + 1x ATR" means today's low came within one ATR of the
-  trendline (a touch or near-touch), using the SAME trendline and ATR
-  computed in Rule 3 - do not re-detect the trendline independently here.
-- Close > Close[-1] (today closed higher than yesterday) is the minimum
-  bar for "this looks like a bounce, not a breakdown."
-- The volume requirement (today's volume >= 1.2x its 20-day average)
-  screens out low-conviction, low-volume drifts that happen to close up.
-
----
-
-### Rule 5: RSI Pullback Zone
-
-Description:
-Confirms this is a genuine pullback within an uptrend (neutral-to-mildly-
-weak momentum), not a stock that's already extended or one that's broken
-down into oversold territory.
+Stock must show strong (not merely neutral) momentum - breakout entries
+need real strength behind them, unlike a pullback entry which wants
+neutral RSI.
 
 Indicator:
 RSI(14) on Daily timeframe
 
 Condition:
 
-35 <= Daily_RSI <= 55
+55 <= Daily_RSI <= 75
 
 Notes:
-- Deliberately below-neutral, unlike a breakout strategy's RSI band -
-  a pullback to support should show cooled-off, not strong, momentum
-  right before the bounce.
-- Below 35 is excluded because RSI that oversold more often signals a
-  genuine breakdown in progress than a healthy pullback.
+- Raised from the neutral 40-65 band used in the prior pullback version.
+  A genuine breakout is accompanied by RSI pushing into the upper range,
+  not sitting at neutral.
+- 75 as a ceiling avoids the most extreme, likely-to-mean-revert overbought
+  readings while still allowing strong momentum through.
+- Reverted a v4.1 tightening to 60 that shrank the sample to a
+  statistically meaningless size (29 trades over 3 years) without proving
+  beneficial - back to the wider band that produced a real sample (760
+  trades over 3 years) to test against.
 
 ---
 
-### Rule 6: Not Already Extended Off the Low
+### Rule 4: Volume Confirmation (Breakout Volume)
 
 Description:
-Avoid entering after the bounce has already happened - this strategy wants
-the start of a bounce off support, not a stock that already ran 10-15% off
-its recent low before the signal fired.
+A breakout without volume is a weak/fakeout signal. Require a real
+volume surge, not just mild acceleration.
 
 Condition:
 
-Close <= 1.15 * Close[-10]
+Volume[-1] > Volume[-2]
+AND
+Volume[-1] >= 1.3 * MA(Volume, 20)
+
+Notes:
+- Raised from 0.8x (pullback version) to 1.3x average - breakout volume
+  should be visibly elevated, not merely average.
+- Reverted a v4.1 tightening to 2.0x that shrank the sample to a
+  statistically meaningless size without proving beneficial.
+- Ignore today's incomplete session volume throughout.
+- Stocks with missing volume data should be rejected.
+
+---
+
+### Rule 5: Breakout Proximity to Short-Term High
+
+Description:
+Price should be pushing to a new short-term high (a breakout entry) rather
+than sitting well below it. This replaces trendline touch-point/slope
+detection, which generated code cannot reliably compute from raw OHLCV.
+
+Condition:
+
+Close >= 0.98 * Highest_Close(20)
+AND
+Close > Close[-1]
+
+Where:
+Highest_Close(20) = the highest closing price over the last 20 trading
+sessions (including today).
+
+Notes:
+- "Within 2% of the 20-day high" while still passing Rule 2's uptrend
+  stack is the breakout-in-an-uptrend setup this strategy is built around.
+- Close > Close[-1] (today closed higher than yesterday) confirms today is
+  an up day, not a stall/reversal day at the highs.
+- Reverted a v4.1 tightening to 0.995 that shrank the sample to a
+  statistically meaningless size without proving beneficial.
+
+---
+
+### Rule 6: Not Already Extended Too Far
+
+Description:
+Avoid chasing a stock that has already run up too much very recently -
+prefer the early stage of a breakout over a multi-week extended move.
+
+Condition:
+
+Close <= 1.25 * Close[-20]
+
+Notes:
+- Price no more than 25% above where it was 20 trading days ago. This
+  excludes stocks in the middle/late stage of a parabolic run, while still
+  allowing genuine fresh breakouts through.
 
 ---
 
@@ -219,19 +191,28 @@ Close <= 1.15 * Close[-10]
 
 Description:
 Stock must belong to a top-performing sector, using the SectorRank already
-computed by the backtester/screener.
+computed by the backtester/screener (ranked by each sector's average
+30-day return - no Nifty-relative or fundamental data involved).
 
 Condition:
 
 SectorRank <= 10
 
+Notes:
+- With only ~15 sectors in the Nifty universe, Top 10 is a meaningful cut
+  without being so tight it starves the strategy of trades.
+- Reverted a v4.1 tightening to Top 5 that shrank the sample to a
+  statistically meaningless size without proving beneficial.
+
 ---
 
-### Rule 8: Market Breadth Filter
+### Rule 8: Market Breadth Filter (v6)
 
 Description:
 Pause new entries when the broader market is itself broad-based weak, even
-if this individual stock's setup looks fine in isolation.
+if this individual stock's setup looks fine in isolation. A good breakout
+setup is more likely to fail when most other stocks are simultaneously
+breaking down - this is a systemic risk no single-stock filter can catch.
 
 Condition:
 
@@ -239,8 +220,13 @@ MarketBreadth >= 45
 
 Notes:
 - MarketBreadth is the % of the entire universe trading above its own
-  50-day moving average, computed once per day - use the market_breadth
-  parameter directly, do not compute it from this stock's own data.
+  50-day moving average, computed once per day (not specific to this
+  stock) - use the market_breadth parameter directly, do not compute it
+  from this stock's own data.
+- 45 was chosen from the historical distribution of this metric over the
+  backtest period (mean ~57, median ~58, 10th percentile ~28): a cutoff of
+  45 excludes roughly the weakest 30% of trading days (broad corrections)
+  while still allowing the large majority of days through.
 
 ---
 
@@ -257,32 +243,28 @@ After filtering, rank candidates.
 ### Rank Score
 
 Score =
-30% Trendline_Quality_Score
+30% Sector_Strength_Score
 +
-25% Bounce_Strength_Score
+30% Volume_Score
 +
-20% Sector_Strength_Score
+25% Breakout_Quality_Score
 +
-15% RSI_Pullback_Score
-+
-10% Proximity_Score
+15% RSI_Strength_Score
 
 Where:
-
-Trendline_Quality_Score = min(100, TrendlineTouches * 20)
-(3 touches = 60 points, 5+ touches = 100 points)
-
-Bounce_Strength_Score = min(100, (Volume[-1] / MA(Volume, 20)) * 50)
-(1.2x average volume = 60 points, 2.0x or more = 100 points)
 
 Sector_Strength_Score = max(0, 100 - (SectorRank - 1) * 10)
 (Rank 1 = 100, declining 10 points per rank)
 
-RSI_Pullback_Score = max(0, 100 - abs(Daily_RSI - 45) * 5)
-(Rewards RSI closest to 45, the middle of the pullback zone)
+Volume_Score = min(100, (Volume[-1] / MA(Volume, 20)) * 40)
+(1.3x average volume = 52 points, 2.5x average volume or more = 100 points)
 
-Proximity_Score = max(0, 100 - (DistanceFromTrendlineInATR * 100))
-(Touching the line exactly = 100 points, a full ATR away = 0 points)
+Breakout_Quality_Score = max(0, 100 - ((Highest_Close(20) - Close) / Highest_Close(20) * 100) * 30)
+(Close exactly at the 20-day high = 100 points, 2% below it = ~40 points)
+
+RSI_Strength_Score = max(0, 100 - abs(Daily_RSI - 65) * 4)
+(Rewards RSI closest to 65, the middle of the strength zone; 0 points at
+RSI 40 or 90)
 
 Higher score is better.
 
@@ -299,9 +281,12 @@ Return:
 - Current Price
 - Daily RSI(14)
 - Volume[-1]
+- Volume[-2]
 - 20D Average Volume
-- Trendline Touches
-- Distance From Trendline (ATR units)
+- Volume[-1] / 20D Avg (ratio)
+- 20-Day High
+- Distance From 20-Day High (%)
+- Close vs Close[-20] (%)
 - Rank Score
 
 Sort:

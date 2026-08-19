@@ -173,7 +173,12 @@ def _load_symbol_history(symbol, from_date, to_date):
     so this cache never expires."""
     cache_path = _cache_path(symbol, from_date, to_date)
     if os.path.exists(cache_path):
-        return pd.read_csv(cache_path, parse_dates=["date"], index_col="date")
+        cached = pd.read_csv(cache_path, parse_dates=["date"], index_col="date")
+        if "delivery_pct" not in cached.columns:
+            # Cache written before delivery_pct was tracked - treat as
+            # unavailable rather than erroring for every rule that reads it.
+            cached["delivery_pct"] = float("nan")
+        return cached
 
     # Only stagger actual network fetches, not cache hits - avoids a
     # thundering-herd burst of requests when many symbols need fetching.
@@ -186,8 +191,12 @@ def _load_symbol_history(symbol, from_date, to_date):
     df = df.sort_values(by="DATE").set_index("DATE")
     df = df.rename(columns={
         "OPEN": "open", "HIGH": "high", "LOW": "low", "CLOSE": "close", "VOLUME": "volume",
+        "DELIVERY %": "delivery_pct",
     })
-    df = df[["open", "high", "low", "close", "volume"]]
+    keep_cols = ["open", "high", "low", "close", "volume"]
+    if "delivery_pct" in df.columns:
+        keep_cols.append("delivery_pct")
+    df = df[keep_cols]
     df.index.name = "date"
 
     df = _dedupe_same_day_rows(df)
@@ -482,6 +491,17 @@ def simulate_portfolio(trades_df, initial_capital=100000.0, max_concurrent_posit
                 allocated[idx] = size
             else:
                 funded[idx] = False
+
+        # Same-day round trips (EntryDate == ExitDate, e.g. a 1-day-hold
+        # exit strategy like BTST) never hit the exits-today step above,
+        # since their exit event was already checked earlier in this same
+        # iteration, before the position existed - close them immediately
+        # after opening instead, or their capital/slot would stay locked
+        # forever and starve every later signal.
+        for idx in entries_today:
+            if funded.get(idx) and trades.loc[idx, "ExitDate"] == date:
+                profit_pct = trades.loc[idx, "ProfitRs"]
+                cash += open_positions.pop(idx) * (1 + profit_pct / 100)
 
         equity_curve.append({"Date": date, "Equity": cash + sum(open_positions.values())})
 

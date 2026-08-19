@@ -9,6 +9,7 @@ import strings
 from constants import EXIT_BACKUP_DIR, EXIT_RULES_PATH, HOLDINGS_PATH, SELL_REPORT_PATH
 from ui_helpers import (
     backup_restore_section,
+    editable_markdown,
     load_into_session,
     nonempty_csv_exists,
     run_script,
@@ -37,12 +38,7 @@ def render_exit_strategy_editor():
 
     load_into_session("exit_rules_content", EXIT_RULES_PATH)
 
-    edited_exit_rules = st.text_area(
-        "Exit strategy rules",
-        value=st.session_state.exit_rules_content,
-        height=300,
-        label_visibility="collapsed",
-    )
+    edited_exit_rules = editable_markdown("exit_rules_content", "Exit strategy rules", 300)
 
     exit_save_col, exit_gen_col = st.columns(2)
     with exit_save_col:
@@ -91,6 +87,12 @@ def render_holdings_editor():
     if "CurrentPrice" not in st.session_state.holdings_df.columns:
         st.session_state.holdings_df["CurrentPrice"] = pd.NA
 
+    # Note: st.session_state.holdings_df is only ever set above (the
+    # initial load) - it must NOT be reassigned to the editor's output
+    # below. data_editor tracks its own per-cell edit diff internally
+    # under `key`; feeding that same output back in as next rerun's
+    # `value` replays the diff against already-edited data, causing a
+    # one-rerun revert-then-reapply flicker on every edit.
     holdings_editor = st.data_editor(
         st.session_state.holdings_df,
         num_rows="dynamic",
@@ -108,9 +110,9 @@ def render_holdings_editor():
 
     holdings_ready = holdings_editor.dropna(subset=["Symbol", "EntryPrice", "EntryDate"])
 
-    if not holdings_editor.equals(st.session_state.holdings_df):
+    if not holdings_ready.equals(st.session_state.get("holdings_last_saved")):
         holdings_ready.to_csv(HOLDINGS_PATH, index=False)
-        st.session_state.holdings_df = holdings_editor
+        st.session_state.holdings_last_saved = holdings_ready.copy()
 
     if st.button("Check exit signals", disabled=holdings_ready.empty):
         with st.spinner("Checking exit signals..."):

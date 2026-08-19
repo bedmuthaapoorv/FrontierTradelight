@@ -83,6 +83,43 @@ def save_with_backup(path, backup_dir, suffix, backup_label, new_content, sessio
     st.session_state[session_key] = new_content
 
 
+def editable_markdown(session_key, text_area_label, text_area_height):
+    """A Preview toggle sitting above the editor that swaps between an
+    editable text_area and a read-only rendered Markdown view of the same
+    content, in the same space (not both shown at once). Live edits are
+    written back to st.session_state[session_key] on every rerun while in
+    edit mode, so switching to preview and back doesn't lose in-progress
+    typing."""
+    show_preview = st.toggle("Preview", key=f"{session_key}_preview_toggle")
+
+    if show_preview:
+        with st.container(border=True, height=text_area_height):
+            st.markdown(st.session_state[session_key])
+        return st.session_state[session_key]
+
+    edited = st.text_area(
+        text_area_label,
+        value=st.session_state[session_key],
+        height=text_area_height,
+        label_visibility="collapsed",
+        key=f"{session_key}_textarea",
+    )
+    st.session_state[session_key] = edited
+    return edited
+
+
+def raw_or_rendered_preview(content, key):
+    """A Preview toggle above a read-only markdown blob (e.g. a backup
+    file) that swaps between the raw source (st.code) and its rendered
+    form (st.markdown), in the same space."""
+    show_preview = st.toggle("Preview", key=key)
+    if show_preview:
+        with st.container(border=True):
+            st.markdown(content)
+    else:
+        st.code(content, language="markdown")
+
+
 def strategy_editor(*, session_key, path, guide_filename, guide_label, backup_dir,
                      backup_suffix, backup_label, text_area_label, text_area_height,
                      save_button_label, save_success_message, no_backups_caption):
@@ -90,12 +127,7 @@ def strategy_editor(*, session_key, path, guide_filename, guide_label, backup_di
     show_guide(guide_filename, guide_label)
     load_into_session(session_key, path)
 
-    edited = st.text_area(
-        text_area_label,
-        value=st.session_state[session_key],
-        height=text_area_height,
-        label_visibility="collapsed",
-    )
+    edited = editable_markdown(session_key, text_area_label, text_area_height)
 
     if st.button(save_button_label):
         save_with_backup(path, backup_dir, backup_suffix, backup_label, edited, session_key)
@@ -115,12 +147,13 @@ def backup_restore_section(*, path, backup_dir, backup_suffix, backup_label,
 
     selected_backup = st.selectbox(selectbox_label, backups)
     backup_content = read_text(os.path.join(backup_dir, selected_backup))
+    preview_key = f"{backup_dir}_{selected_backup}_preview"
 
     if show_in_expander:
-        st.code(backup_content, language="markdown")
+        raw_or_rendered_preview(backup_content, key=preview_key)
     else:
         with st.expander(f"Preview {selected_backup}"):
-            st.code(backup_content, language="markdown")
+            raw_or_rendered_preview(backup_content, key=preview_key)
 
     if st.button(f"{overwrite_label_prefix} {selected_backup}"):
         current_content = read_text(path)

@@ -123,3 +123,31 @@ If no condition above triggers before the available data ends, do not exit -
 the backtester itself force-closes any still-open trade at the last
 available close, tagged "RangeEnd". Exit strategies never need to implement
 this fallback themselves.
+
+---
+
+## State Inspection (For HOLD Explanations, Not Used By The Backtester)
+
+In addition to resolve_exit(), also implement:
+
+describe_state(entry_price, entry_date, signal_history_df, future_df)
+
+This replays the same daily update logic as resolve_exit() (same Trailing_SL
+ratchet, same Highest_Close tracking) but for a trade that has NOT exited -
+it returns the exit logic's internal state as of the last available day
+instead of an exit event, so sell_screener.py can explain *why* a holding is
+still a HOLD (how far price is from the trailing stop, how many days until
+MaxHold) rather than just saying "not met yet."
+
+Return a dict with:
+- TrailingStop        (current trailing stop level)
+- HighestClose         (peak closing price tracked since entry)
+- LastClose            (most recent close in future_df)
+- DistanceToStopPct    ((LastClose - TrailingStop) / LastClose * 100)
+- DaysHeld             (trading days since entry)
+- DaysToMaxHold        (90 - DaysHeld, floored at 0)
+
+Return None if state cannot be computed (e.g. insufficient history).
+
+The backtester never calls this - only the live Sell tab does, to build a
+richer explanation for holds.

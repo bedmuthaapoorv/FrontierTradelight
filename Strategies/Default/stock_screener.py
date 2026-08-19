@@ -41,7 +41,10 @@ def fetch_data(tickers, days=400):
                     "LOW": "low",
                     "CLOSE": "close",
                     "VOLUME": "volume",
+                    "DELIVERY %": "delivery_pct",
                 })
+                if "delivery_pct" not in df.columns:
+                    df["delivery_pct"] = float("nan")
                 data[ticker] = df
         except Exception as e:
             print(f"Failed to fetch {ticker}: {e}")
