@@ -8,7 +8,7 @@ import streamlit as st
 import strings
 from constants import EXIT_BACKUP_DIR, EXIT_RULES_PATH, HOLDINGS_PATH, SELL_REPORT_PATH
 from ui_helpers import (
-    backup_restore_section,
+    backup_restore_modal,
     editable_markdown,
     load_into_session,
     nonempty_csv_exists,
@@ -57,19 +57,19 @@ def render_exit_strategy_editor():
             "generated_exit_strategy.py updated.",
         )
 
-    with st.expander("Load a previous exit strategy"):
-        backup_restore_section(
-            path=EXIT_RULES_PATH,
-            backup_dir=EXIT_BACKUP_DIR,
-            backup_suffix="exit_rules",
-            backup_label="ExitRules_backup",
-            session_key="exit_rules_content",
-            no_backups_caption=strings.NO_EXIT_BACKUPS_CAPTION,
-            selectbox_label="Choose a backed-up exit strategy",
-            overwrite_label_prefix="Overwrite exit_rules.md with",
-            success_message_prefix="exit_rules.md overwritten with",
-            show_in_expander=True,
-        )
+    backup_restore_modal(
+        modal_title="Load a previous exit strategy",
+        open_button_label="Load a previous exit strategy",
+        path=EXIT_RULES_PATH,
+        backup_dir=EXIT_BACKUP_DIR,
+        backup_suffix="exit_rules",
+        backup_label="ExitRules_backup",
+        session_key="exit_rules_content",
+        no_backups_caption=strings.NO_EXIT_BACKUPS_CAPTION,
+        selectbox_label="Choose a backed-up exit strategy",
+        overwrite_label_prefix="Overwrite exit_rules.md with",
+        success_message_prefix="exit_rules.md overwritten with",
+    )
 
 
 def render_holdings_editor():

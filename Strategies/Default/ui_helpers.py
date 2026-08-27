@@ -10,7 +10,7 @@ import os
 
 import streamlit as st
 
-from backup_utils import backup_markdown, list_backups
+from backup_utils import backup_markdown, delete_backup, list_backups, rename_backup
 from constants import APP_DIR
 
 
@@ -149,12 +149,6 @@ def backup_restore_section(*, path, backup_dir, backup_suffix, backup_label,
     backup_content = read_text(os.path.join(backup_dir, selected_backup))
     preview_key = f"{backup_dir}_{selected_backup}_preview"
 
-    if show_in_expander:
-        raw_or_rendered_preview(backup_content, key=preview_key)
-    else:
-        with st.expander(f"Preview {selected_backup}"):
-            raw_or_rendered_preview(backup_content, key=preview_key)
-
     if st.button(f"{overwrite_label_prefix} {selected_backup}"):
         current_content = read_text(path)
         if current_content.strip() and current_content != backup_content:
@@ -165,3 +159,59 @@ def backup_restore_section(*, path, backup_dir, backup_suffix, backup_label,
         st.session_state[session_key] = backup_content
         st.success(f"{success_message_prefix} {selected_backup}")
         st.rerun()
+
+    if show_in_expander:
+        raw_or_rendered_preview(backup_content, key=preview_key)
+    else:
+        with st.expander(f"Preview {selected_backup}"):
+            raw_or_rendered_preview(backup_content, key=preview_key)
+
+    manage_backup_file(backup_dir, selected_backup)
+
+
+def backup_restore_modal(*, modal_title, open_button_label, **section_kwargs):
+    """Opens the backup/restore workflow (backup_restore_section) in a
+    modal dialog instead of an inline expander, so browsing old strategy
+    versions doesn't push the rest of the tab's content down/compete for
+    space with the editor above it. Always renders the backup preview
+    inline (not in its own nested expander) since it's already inside the
+    dialog's own contained surface."""
+    if st.button(open_button_label):
+        _open_backup_dialog(modal_title, section_kwargs)
+
+
+def _open_backup_dialog(modal_title, section_kwargs):
+    @st.dialog(modal_title)
+    def _dialog():
+        backup_restore_section(**section_kwargs, show_in_expander=True)
+
+    _dialog()
+
+
+def manage_backup_file(backup_dir, selected_backup):
+    """Rename or permanently delete a single backup file - does not touch
+    the live rules.md/exit_rules.md, only the backup copy itself."""
+    rename_col, delete_col = st.columns(2)
+
+    with rename_col:
+        with st.popover("Rename"):
+            new_name = st.text_input(
+                "New name (no extension)",
+                value=os.path.splitext(selected_backup)[0],
+                key=f"{backup_dir}_{selected_backup}_rename_input",
+            )
+            if st.button("Confirm rename", key=f"{backup_dir}_{selected_backup}_rename_confirm"):
+                result = rename_backup(backup_dir, selected_backup, new_name)
+                if result is None:
+                    st.error("Enter a valid name first.")
+                else:
+                    st.success(f"Renamed to {result}")
+                    st.rerun()
+
+    with delete_col:
+        with st.popover("Delete"):
+            st.caption(f"Permanently delete {selected_backup}? This cannot be undone.")
+            if st.button("Confirm delete", key=f"{backup_dir}_{selected_backup}_delete_confirm"):
+                delete_backup(backup_dir, selected_backup)
+                st.success(f"Deleted {selected_backup}")
+                st.rerun()

@@ -4,7 +4,7 @@ import streamlit as st
 
 import strings
 from constants import BACKUP_DIR, RULES_PATH
-from ui_helpers import backup_restore_section, strategy_editor
+from ui_helpers import backup_restore_modal, strategy_editor
 
 TITLE = "Rules"
 ORDER = 10
@@ -30,8 +30,9 @@ def render():
 
     st.divider()
 
-    st.subheader("Load a previous strategy")
-    backup_restore_section(
+    backup_restore_modal(
+        modal_title="Load a previous strategy",
+        open_button_label="Load a previous strategy",
         path=RULES_PATH,
         backup_dir=BACKUP_DIR,
         backup_suffix="rules",

@@ -37,3 +37,42 @@ def list_backups(backup_dir):
     if not os.path.isdir(backup_dir):
         return []
     return sorted(f for f in os.listdir(backup_dir) if f.endswith(".md"))
+
+
+def delete_backup(backup_dir, filename):
+    """Permanently removes a backup file. Callers are responsible for
+    confirming with the user first - this has no undo."""
+    path = os.path.join(backup_dir, filename)
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def rename_backup(backup_dir, old_filename, new_name):
+    """Renames a backup file to new_name (a bare name, without the .md
+    extension - this always adds it). Returns the final filename actually
+    used, or None if old_filename doesn't exist or new_name is empty.
+
+    If a file with the target name already exists, appends a numeric
+    suffix rather than silently overwriting it.
+    """
+    if not new_name.strip():
+        return None
+
+    old_path = os.path.join(backup_dir, old_filename)
+    if not os.path.exists(old_path):
+        return None
+
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]+", "_", new_name.strip()).strip("_")
+    if not safe_name:
+        return None
+
+    new_filename = f"{safe_name}.md"
+    candidate = new_filename
+    counter = 2
+    while os.path.exists(os.path.join(backup_dir, candidate)) and candidate != old_filename:
+        candidate = f"{safe_name}_{counter}.md"
+        counter += 1
+
+    new_path = os.path.join(backup_dir, candidate)
+    os.rename(old_path, new_path)
+    return candidate
