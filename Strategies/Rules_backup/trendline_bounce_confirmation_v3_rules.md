@@ -400,12 +400,25 @@ Return:
 - Sector
 - Sector Rank
 - Current Price
+- Ideal Entry Price Low
+- Ideal Entry Price High
 - Daily RSI(14)
 - Volume[-1]
 - 20D Average Volume
 - Trendline Touches
 - Distance From Trendline (ATR units)
 - Rank Score
+
+Where:
+
+Ideal Entry Price Low = Close
+Ideal Entry Price High = Close * 1.01
+
+This mirrors what the backtester actually does (enters at Close on the
+signal day) while giving a small band, since a real fill a moment after
+the signal is rarely at the exact closing tick. Do not use this band to
+change entry logic anywhere else (Mandatory Filters, Ranking Rules,
+backtester) - it is a display-only suggestion for manual order placement.
 
 Sort:
 

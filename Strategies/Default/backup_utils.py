@@ -5,6 +5,14 @@ import re
 from datetime import datetime
 
 
+def declared_strategy_name(content, name_field="Strategy Name"):
+    """Reads the "<name_field>: ..." line from a rules.md/exit_rules.md's
+    content (e.g. "Breakout Momentum v6"). Returns "" if no such line is
+    present."""
+    match = re.search(rf"{re.escape(name_field)}:\s*(.+)", content)
+    return match.group(1).strip() if match else ""
+
+
 def strategy_slug(content, name_field="Strategy Name"):
     """Turn a rules.md/exit_rules.md's declared name into a backup filename.
 
@@ -15,8 +23,7 @@ def strategy_slug(content, name_field="Strategy Name"):
     If no such line is present, falls back to a timestamp so we always get a
     usable filename.
     """
-    match = re.search(rf"{re.escape(name_field)}:\s*(.+)", content)
-    declared_name = match.group(1).strip() if match else ""
+    declared_name = declared_strategy_name(content, name_field=name_field)
     slug = re.sub(r"[^a-z0-9]+", "_", declared_name.lower()).strip("_")
     return slug or datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -37,6 +44,28 @@ def list_backups(backup_dir):
     if not os.path.isdir(backup_dir):
         return []
     return sorted(f for f in os.listdir(backup_dir) if f.endswith(".md"))
+
+
+def group_backups(backups):
+    """Groups backup filenames by the strategy name they were saved under,
+    collapsing the many timestamped versions of the same strategy into one
+    entry so the restore UI doesn't show a huge flat list. A file that was
+    manually renamed (so it no longer ends in the auto-generated
+    "_YYYYMMDD_HHMMSS.md" suffix) becomes its own single-item group.
+
+    Returns a dict of group_label -> [filenames], newest version first,
+    sorted by group label.
+    """
+    groups = {}
+    for filename in backups:
+        match = re.match(r"^(.*)_\d{8}_\d{6}\.md$", filename)
+        key = match.group(1) if match else os.path.splitext(filename)[0]
+        groups.setdefault(key, []).append(filename)
+
+    for versions in groups.values():
+        versions.sort(reverse=True)
+
+    return dict(sorted(groups.items()))
 
 
 def delete_backup(backup_dir, filename):

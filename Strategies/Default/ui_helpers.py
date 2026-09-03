@@ -10,7 +10,7 @@ import os
 
 import streamlit as st
 
-from backup_utils import backup_markdown, delete_backup, list_backups, rename_backup
+from backup_utils import backup_markdown, delete_backup, group_backups, list_backups, rename_backup
 from constants import APP_DIR
 
 
@@ -68,8 +68,31 @@ def nonempty_csv_exists(path):
 
 
 def load_into_session(session_key, path):
-    if session_key not in st.session_state:
-        st.session_state[session_key] = read_text(path)
+    """Loads path's content into session_state[session_key] the first time,
+    and re-syncs it whenever the file's on-disk mtime has moved since the
+    last load - so a change made outside this app session (a direct edit,
+    another script, restoring the file from git) shows up on the next
+    rerun instead of staying invisible until the whole Streamlit process
+    is restarted. Only compares mtime (not content) so this stays cheap on
+    every rerun. Note: if the file changes externally while you have
+    unsaved edits in the text area, this will overwrite them - external
+    changes winning is the safer default here since a stale editor has
+    been the recurring problem, not clobbered in-progress edits."""
+    mtime_key = f"{session_key}_mtime"
+    current_mtime = os.path.getmtime(path)
+    if session_key not in st.session_state or st.session_state.get(mtime_key) != current_mtime:
+        set_markdown_session_content(session_key, read_text(path))
+        st.session_state[mtime_key] = current_mtime
+
+
+def write_and_sync(path, content, session_key):
+    """Writes content to path, then updates session_state (both the plain
+    key and the text_area's own widget key - see set_markdown_session_content)
+    and the mtime load_into_session tracks, so this app's own write doesn't
+    look like an external change that needs re-syncing on the next rerun."""
+    write_text(path, content)
+    set_markdown_session_content(session_key, content)
+    st.session_state[f"{session_key}_mtime"] = os.path.getmtime(path)
 
 
 def save_with_backup(path, backup_dir, suffix, backup_label, new_content, session_key):
@@ -79,8 +102,24 @@ def save_with_backup(path, backup_dir, suffix, backup_label, new_content, sessio
         backup_name = backup_markdown(previous_content, backup_dir, suffix)
         st.info(f"Backed up previous {os.path.basename(path)} to {backup_label}/{backup_name}")
 
-    write_text(path, new_content)
-    st.session_state[session_key] = new_content
+    write_and_sync(path, new_content, session_key)
+
+
+def set_markdown_session_content(session_key, content):
+    """Sets st.session_state[session_key] AND the underlying text_area
+    widget's own state (editable_markdown's `key=f"{session_key}_textarea"`).
+
+    Once a keyed widget has rendered once, Streamlit ignores any `value=`
+    passed to it on later reruns and uses the widget's own session_state
+    entry instead - so overwriting only session_state[session_key] (e.g.
+    after restoring a backup) silently fails to update the visible text
+    area; it keeps showing whatever it last rendered. Any code path that
+    replaces a markdown file's content wholesale (not via the user typing
+    into the text area itself) must go through this, not a plain
+    `st.session_state[session_key] = content` assignment.
+    """
+    st.session_state[session_key] = content
+    st.session_state[f"{session_key}_textarea"] = content
 
 
 def editable_markdown(session_key, text_area_label, text_area_height):
@@ -138,33 +177,54 @@ def strategy_editor(*, session_key, path, guide_filename, guide_label, backup_di
 
 def backup_restore_section(*, path, backup_dir, backup_suffix, backup_label,
                             session_key, no_backups_caption, selectbox_label,
-                            overwrite_label_prefix, success_message_prefix,
-                            show_in_expander=False):
+                            overwrite_label_prefix, success_message_prefix):
     backups = list_backups(backup_dir)
     if not backups:
         st.caption(no_backups_caption)
         return
 
-    selected_backup = st.selectbox(selectbox_label, backups)
+    search = st.text_input(
+        "Search backups", key=f"{backup_dir}_search", placeholder="Filter by name...",
+    )
+    if search:
+        backups = [f for f in backups if search.lower() in f.lower()]
+        if not backups:
+            st.caption(f"No backups match '{search}'.")
+            return
+
+    groups = group_backups(backups)
+    selected_group = st.selectbox(
+        selectbox_label, list(groups.keys()), format_func=lambda g: g.replace("_", " ").title(),
+    )
+    versions = groups[selected_group]
+
+    if len(versions) > 1:
+        selected_backup = st.selectbox(f"Version ({len(versions)} saved)", versions)
+    else:
+        selected_backup = versions[0]
+
     backup_content = read_text(os.path.join(backup_dir, selected_backup))
     preview_key = f"{backup_dir}_{selected_backup}_preview"
 
+    # Note: no st.rerun() here. This section runs inside an st.dialog whose
+    # opening is gated behind `if st.button(open_button_label)` in the
+    # parent scope (see backup_restore_modal below). Calling st.rerun()
+    # forces a full top-to-bottom script rerun, and on that rerun the
+    # open button's return value is False again - so the gate fails and
+    # the dialog silently closes instead of showing the success message.
+    # Letting Streamlit's normal automatic rerun (triggered by the button
+    # click itself) run its course keeps the dialog open.
     if st.button(f"{overwrite_label_prefix} {selected_backup}"):
         current_content = read_text(path)
         if current_content.strip() and current_content != backup_content:
             backup_name = backup_markdown(current_content, backup_dir, backup_suffix)
             st.info(f"Backed up previous {os.path.basename(path)} to {backup_label}/{backup_name}")
 
-        write_text(path, backup_content)
-        st.session_state[session_key] = backup_content
+        write_and_sync(path, backup_content, session_key)
         st.success(f"{success_message_prefix} {selected_backup}")
-        st.rerun()
 
-    if show_in_expander:
+    with st.expander(f"Preview {selected_backup}", expanded=False):
         raw_or_rendered_preview(backup_content, key=preview_key)
-    else:
-        with st.expander(f"Preview {selected_backup}"):
-            raw_or_rendered_preview(backup_content, key=preview_key)
 
     manage_backup_file(backup_dir, selected_backup)
 
@@ -173,9 +233,7 @@ def backup_restore_modal(*, modal_title, open_button_label, **section_kwargs):
     """Opens the backup/restore workflow (backup_restore_section) in a
     modal dialog instead of an inline expander, so browsing old strategy
     versions doesn't push the rest of the tab's content down/compete for
-    space with the editor above it. Always renders the backup preview
-    inline (not in its own nested expander) since it's already inside the
-    dialog's own contained surface."""
+    space with the editor above it."""
     if st.button(open_button_label):
         _open_backup_dialog(modal_title, section_kwargs)
 
@@ -183,7 +241,7 @@ def backup_restore_modal(*, modal_title, open_button_label, **section_kwargs):
 def _open_backup_dialog(modal_title, section_kwargs):
     @st.dialog(modal_title)
     def _dialog():
-        backup_restore_section(**section_kwargs, show_in_expander=True)
+        backup_restore_section(**section_kwargs)
 
     _dialog()
 
@@ -206,7 +264,6 @@ def manage_backup_file(backup_dir, selected_backup):
                     st.error("Enter a valid name first.")
                 else:
                     st.success(f"Renamed to {result}")
-                    st.rerun()
 
     with delete_col:
         with st.popover("Delete"):
@@ -214,4 +271,3 @@ def manage_backup_file(backup_dir, selected_backup):
             if st.button("Confirm delete", key=f"{backup_dir}_{selected_backup}_delete_confirm"):
                 delete_backup(backup_dir, selected_backup)
                 st.success(f"Deleted {selected_backup}")
-                st.rerun()

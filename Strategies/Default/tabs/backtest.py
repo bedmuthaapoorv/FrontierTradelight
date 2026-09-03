@@ -11,13 +11,17 @@ import backtest as backtest_engine
 import inflation_utils
 import nifty_utils
 import strings
+from backup_utils import declared_strategy_name
 from constants import (
     APP_DIR,
     BACKTEST_LOG_PATH,
     BACKTEST_PORTFOLIO_PATH,
     BACKTEST_SUMMARY_PATH,
     BACKTEST_TRADES_PATH,
+    RULES_PATH,
+    STRATEGY_STATS_PATH,
 )
+from stats_utils import upsert_strategy_stats
 from ui_helpers import nonempty_csv_exists, read_text, show_guide
 
 TITLE = "Backtest"
@@ -158,11 +162,32 @@ def render_portfolio_result(initial_capital):
                 cagr_pct = ((final_equity / initial_capital) ** (1 / years) - 1) * 100
                 cagr_display = f"{cagr_pct:+.2f}%/yr"
             else:
+                cagr_pct = None
                 cagr_display = "N/A"
 
             running_max = portfolio_df["Equity"].cummax()
             drawdown_pct = (portfolio_df["Equity"] - running_max) / running_max * 100
             max_dd_pct = drawdown_pct.min()
+
+            daily_returns = portfolio_df["Equity"].pct_change().dropna()
+            sharpe_ratio = (
+                (daily_returns.mean() / daily_returns.std()) * (252 ** 0.5)
+                if daily_returns.std() > 0 else 0.0
+            )
+
+            composite_score = (
+                (cagr_pct / 100 * sharpe_ratio) / abs(max_dd_pct / 100)
+                if cagr_pct is not None and max_dd_pct != 0 else None
+            )
+
+            # Record this strategy's latest stats for the Stats tab. Safe to
+            # call on every render (not just right after a fresh run) since
+            # it just re-upserts the same values when nothing has changed -
+            # the values themselves only change when a new backtest actually
+            # overwrites BACKTEST_PORTFOLIO_PATH.
+            if cagr_pct is not None:
+                strategy_name = declared_strategy_name(read_text(RULES_PATH))
+                upsert_strategy_stats(STRATEGY_STATS_PATH, strategy_name, cagr_pct, max_dd_pct, composite_score)
 
             show_inflation_adjusted = st.checkbox(
                 "Show inflation-adjusted results", help=strings.INFLATION_ADJUSTED_HELP
@@ -178,7 +203,7 @@ def render_portfolio_result(initial_capital):
             if inflation_caption:
                 st.caption(inflation_caption)
 
-            m1, m2, m3, m4, m5 = st.columns(5)
+            m1, m2, m3, m4, m5, m6 = st.columns(6)
             m1.metric(
                 "Final equity" + (" (inflation-adjusted)" if show_inflation_adjusted else ""),
                 f"Rs.{display_equity:,.0f}",
@@ -192,6 +217,11 @@ def render_portfolio_result(initial_capital):
             m3.metric("Max drawdown", f"{max_dd_pct:.1f}%", help=strings.MAX_DRAWDOWN_HELP)
             m4.metric("Funded trades", funded_count)
             m5.metric("Skipped (no capital)", skipped_count)
+            m6.metric(
+                "Composite Score",
+                f"{composite_score:.2f}" if composite_score is not None else "N/A",
+                help=strings.COMPOSITE_SCORE_HELP,
+            )
 
             render_equity_chart(portfolio_df, initial_capital, show_inflation_adjusted, yearly_rates)
 

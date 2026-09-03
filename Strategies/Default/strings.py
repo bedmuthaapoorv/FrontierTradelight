@@ -105,6 +105,20 @@ MAX_DRAWDOWN_HELP = (
     "not steady compounding."
 )
 
+SHARPE_RATIO_HELP = (
+    "Return per unit of volatility, annualized from daily equity changes "
+    "(assumes a 0% risk-free rate, since no risk-free rate data is "
+    "available here). Higher means steadier gains, not just bigger ones."
+)
+
+COMPOSITE_SCORE_HELP = (
+    "(CAGR x Sharpe) / |Max Drawdown| - a single number that rewards high, "
+    "steady returns and penalizes deep drawdowns, so two runs with similar "
+    "CAGR but very different risk profiles don't look equally good. Useful "
+    "for ranking strategy variants against each other, not as a "
+    "standalone target."
+)
+
 YEARLY_BREAKDOWN_CAPTION = (
     "A single CAGR over a multi-year range can hide a lot - a return "
     "dominated by one exceptional year looks the same in that headline "

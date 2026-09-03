@@ -73,7 +73,12 @@ Examples:
 ]
 
 Details:
-Store every calculated metric used.
+Store every calculated metric used, PLUS every field listed in RULES'
+"Output Columns" section (if present), using that section's exact field
+names as dict keys (spaces are fine in keys, e.g. "Ideal Entry Price Low").
+Compute each Output Columns field exactly as defined in that section's
+"Where:" formulas - do not omit a field because it isn't otherwise used by
+a mandatory filter or the ranking score.
 
 Example:
 {{
