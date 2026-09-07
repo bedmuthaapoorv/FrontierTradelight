@@ -1,6 +1,14 @@
 import os
+from datetime import date
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# The standard range every strategy's Stats tab row is compared on. Not a
+# suggestion - tabs/backtest.py only upserts into the Stats tab when a
+# backtest actually ran over exactly this range, so the leaderboard never
+# silently mixes results from different time windows.
+BENCHMARK_START_DATE = date(2021, 1, 1)
+BENCHMARK_END_DATE = date(2026, 1, 1)
 
 RULES_PATH = os.path.join(APP_DIR, "rules.md")
 BACKUP_DIR = os.path.normpath(os.path.join(APP_DIR, "..", "Rules_backup"))

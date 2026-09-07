@@ -106,8 +106,10 @@ def save_with_backup(path, backup_dir, suffix, backup_label, new_content, sessio
 
 
 def set_markdown_session_content(session_key, content):
-    """Sets st.session_state[session_key] AND the underlying text_area
-    widget's own state (editable_markdown's `key=f"{session_key}_textarea"`).
+    """Sets st.session_state[session_key] and clears the underlying
+    text_area widget's own state (editable_markdown's
+    `key=f"{session_key}_textarea"`) so it re-initializes from
+    session_key next time it's actually rendered.
 
     Once a keyed widget has rendered once, Streamlit ignores any `value=`
     passed to it on later reruns and uses the widget's own session_state
@@ -117,9 +119,20 @@ def set_markdown_session_content(session_key, content):
     replaces a markdown file's content wholesale (not via the user typing
     into the text area itself) must go through this, not a plain
     `st.session_state[session_key] = content` assignment.
+
+    Deliberately DELETES the `_textarea` key rather than assigning it a
+    new value: Streamlit raises StreamlitAPIException ("cannot be
+    modified after the widget... is instantiated") if you assign to an
+    already-instantiated widget's own key from a script run where that
+    widget isn't being re-rendered - e.g. triggering this from the Stats
+    tab's benchmark flow, not the Rules tab itself. Deleting the key is
+    always safe regardless of which page/run triggers this, and an absent
+    key is exactly what makes the widget accept the `value=` argument
+    (read from session_key) as its fresh initial value the next time it
+    actually renders.
     """
     st.session_state[session_key] = content
-    st.session_state[f"{session_key}_textarea"] = content
+    st.session_state.pop(f"{session_key}_textarea", None)
 
 
 def editable_markdown(session_key, text_area_label, text_area_height):

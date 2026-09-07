@@ -1,9 +1,6 @@
 """Backtest generated_rules.py + generated_exit_strategy.py over a date range."""
 
-import json
 import os
-import subprocess
-import sys
 
 import pandas as pd
 import streamlit as st
@@ -12,37 +9,13 @@ import backtest as backtest_engine
 import inflation_utils
 import nifty_utils
 import strings
+from backtest_runner import compute_metrics, launch_backtest, show_backtest_progress
 from constants import (
-    APP_DIR,
-    BACKTEST_LOG_PATH,
-    BACKTEST_META_PATH,
     BACKTEST_PORTFOLIO_PATH,
     BACKTEST_SUMMARY_PATH,
     BACKTEST_TRADES_PATH,
-    STRATEGY_STATS_PATH,
 )
-from stats_utils import upsert_strategy_stats
-from ui_helpers import nonempty_csv_exists, read_text, show_guide
-
-
-def _backtested_meta():
-    """The strategy/exit-strategy names the CURRENT backtest_portfolio.csv
-    actually belongs to - recorded by backtest.py at the moment it ran,
-    not re-read from rules.md/exit_rules.md now, since either can be
-    swapped to a different strategy afterward without a new backtest
-    being run. Returns (None, None) (skip recording, rather than guess)
-    for results produced before this tracking existed - falling back to
-    "whatever's live now" is exactly the bug this replaces: it would
-    misattribute an old backtest's numbers to whatever strategy happens
-    to be loaded when the file is missing."""
-    if os.path.exists(BACKTEST_META_PATH):
-        try:
-            with open(BACKTEST_META_PATH, "r", encoding="utf-8") as f:
-                meta = json.load(f)
-            return meta.get("strategy_name") or None, meta.get("exit_strategy_name") or None
-        except (json.JSONDecodeError, OSError):
-            return None, None
-    return None, None
+from ui_helpers import nonempty_csv_exists, show_guide
 
 TITLE = "Backtest"
 ORDER = 50
@@ -101,26 +74,6 @@ def render_config():
     return start_date, end_date, initial_capital, max_positions, is_running
 
 
-@st.fragment(run_every=2)
-def show_backtest_progress():
-    """Polls the running backtest's log file and process status every 2s,
-    without blocking the rest of the page (so the Stop button stays clickable)."""
-    process = st.session_state.get("backtest_process")
-    if process is None:
-        return
-
-    if os.path.exists(BACKTEST_LOG_PATH):
-        st.code(read_text(BACKTEST_LOG_PATH)[-3000:] or "Starting...")
-
-    if process.poll() is not None:
-        st.session_state.backtest_running = False
-        if process.returncode == 0:
-            st.success("Backtest complete. See results below.")
-        else:
-            st.error(f"backtest.py exited with code {process.returncode}.")
-        st.rerun()
-
-
 def render_run_controls(start_date, end_date, initial_capital, max_positions, is_running):
     run_col, stop_col = st.columns([1, 1])
     with run_col:
@@ -132,22 +85,7 @@ def render_run_controls(start_date, end_date, initial_capital, max_positions, is
         if start_date >= end_date:
             st.error("Start date must be before end date.")
         else:
-            args = [
-                "--start", start_date.isoformat(),
-                "--end", end_date.isoformat(),
-                "--initial-capital", str(initial_capital),
-                "--max-positions", str(int(max_positions)),
-            ]
-
-            with open(BACKTEST_LOG_PATH, "w", encoding="utf-8") as log_file:
-                process = subprocess.Popen(
-                    [sys.executable, "backtest.py", *args],
-                    cwd=APP_DIR,
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
-                )
-            st.session_state.backtest_process = process
-            st.session_state.backtest_running = True
+            launch_backtest(start_date, end_date, initial_capital, max_positions)
             st.rerun()
 
     if stop_clicked:
@@ -178,44 +116,13 @@ def render_portfolio_result(initial_capital):
 
             span_days = (portfolio_df["Date"].max() - portfolio_df["Date"].min()).days
             years = span_days / 365.25
-            if years > 0 and final_equity > 0:
-                cagr_pct = ((final_equity / initial_capital) ** (1 / years) - 1) * 100
-                cagr_display = f"{cagr_pct:+.2f}%/yr"
-            else:
-                cagr_pct = None
-                cagr_display = "N/A"
 
-            running_max = portfolio_df["Equity"].cummax()
-            drawdown_pct = (portfolio_df["Equity"] - running_max) / running_max * 100
-            max_dd_pct = drawdown_pct.min()
-
-            daily_returns = portfolio_df["Equity"].pct_change().dropna()
-            sharpe_ratio = (
-                (daily_returns.mean() / daily_returns.std()) * (252 ** 0.5)
-                if daily_returns.std() > 0 else 0.0
-            )
-
-            composite_score = (
-                (cagr_pct / 100 * sharpe_ratio) / abs(max_dd_pct / 100)
-                if cagr_pct is not None and max_dd_pct != 0 else None
-            )
-
-            # Record this strategy's latest stats for the Stats tab. Safe to
-            # call on every render (not just right after a fresh run) since
-            # it just re-upserts the same values when nothing has changed -
-            # the values themselves only change when a new backtest actually
-            # overwrites BACKTEST_PORTFOLIO_PATH. Uses the strategy/exit
-            # names recorded AT BACKTEST-RUN TIME (see _backtested_meta),
-            # not whatever's currently in rules.md/exit_rules.md - otherwise
-            # loading a different strategy via the restore modal without
-            # re-running a backtest would misattribute this old backtest's
-            # numbers to the newly loaded strategy's row.
-            strategy_name, exit_strategy_name = _backtested_meta()
-            if cagr_pct is not None and strategy_name:
-                upsert_strategy_stats(
-                    STRATEGY_STATS_PATH, strategy_name, cagr_pct, max_dd_pct, composite_score,
-                    exit_strategy_name=exit_strategy_name,
-                )
+            # Same computation used to decide whether/what to record into
+            # the Stats tab (see backtest_runner.record_stats_if_benchmark,
+            # triggered once at actual backtest completion, not on every
+            # render of this tab) - shared so the two can never diverge.
+            cagr_pct, max_dd_pct, composite_score = compute_metrics(portfolio_df, initial_capital)
+            cagr_display = f"{cagr_pct:+.2f}%/yr" if cagr_pct is not None else "N/A"
 
             show_inflation_adjusted = st.checkbox(
                 "Show inflation-adjusted results", help=strings.INFLATION_ADJUSTED_HELP

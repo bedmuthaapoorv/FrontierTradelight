@@ -595,6 +595,8 @@ def main():
                 open(EXIT_RULES_PATH, encoding="utf-8").read(), name_field="Exit Strategy Name"
             ),
             "initial_capital": args.initial_capital,
+            "start_date": args.start.isoformat(),
+            "end_date": args.end.isoformat(),
         }, f)
 
     print(f"\n{len(trades_df)} trades simulated.")
