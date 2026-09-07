@@ -25,6 +25,7 @@ BACKTEST_PORTFOLIO_PATH = os.path.join(DATA_DIR, "backtest_portfolio.csv")
 BACKTEST_LOG_PATH = os.path.join(DATA_DIR, "backtest_run.log")
 NEAR_MISSES_PATH = os.path.join(DATA_DIR, "near_misses.csv")
 STRATEGY_STATS_PATH = os.path.join(DATA_DIR, "strategy_stats.csv")
+BACKTEST_META_PATH = os.path.join(DATA_DIR, "backtest_meta.json")
 
 BACKTEST_CACHE_DIR = os.path.join(DATA_DIR, "backtest_cache")
 UNIVERSE_CACHE_PATH = os.path.join(DATA_DIR, "universe_cache.json")

@@ -28,6 +28,7 @@ Mechanics:
 
 import argparse
 import datetime
+import json
 import os
 import random
 import re
@@ -40,12 +41,16 @@ import pandas as pd
 
 from universe_fetcher import get_top_stocks_by_sector
 from nse_utils import fetch_stock_history, calculate_sector_strength, calculate_market_breadth
+from backup_utils import declared_strategy_name
 from constants import (
     BACKTEST_CACHE_DIR,
+    BACKTEST_META_PATH,
     BACKTEST_PORTFOLIO_PATH,
     BACKTEST_SUMMARY_PATH,
     BACKTEST_TRADES_PATH,
+    EXIT_RULES_PATH,
     NEAR_MISSES_PATH,
+    RULES_PATH,
 )
 import generated_rules
 import generated_exit_strategy
@@ -230,7 +235,7 @@ def load_universe_history(universe, start_date, end_date, warmup_days=WARMUP_DAY
     return data
 
 
-def _open_and_resolve_trade(symbol, full_df, signal_day, end_date, closeness_score):
+def _open_and_resolve_trade(symbol, full_df, signal_day, end_date, closeness_score, active_strategy=None):
     """Enter at the next trading day's open after signal_day, then hand off
     to generated_exit_strategy.resolve_exit() to decide when to exit.
 
@@ -285,6 +290,7 @@ def _open_and_resolve_trade(symbol, full_df, signal_day, end_date, closeness_sco
         "ExitReason": exit_reason,
         "ClosenessScore": round(float(closeness_score), 2),
         "ProfitRs": round(profit_rs, 2),
+        "Active Strategy": active_strategy,
     }
 
 
@@ -407,7 +413,8 @@ def run_backtest(start_date, end_date, limit_per_sector=50, progress_callback=No
                 continue
 
             trade = _open_and_resolve_trade(
-                symbol, data[symbol], day, end_date, result.get("ClosenessScore", 0.0)
+                symbol, data[symbol], day, end_date, result.get("ClosenessScore", 0.0),
+                active_strategy=result.get("Details", {}).get("Active Strategy"),
             )
             if trade:
                 trades.append(trade)
@@ -415,6 +422,7 @@ def run_backtest(start_date, end_date, limit_per_sector=50, progress_callback=No
     trade_columns = [
         "Symbol", "SignalDate", "EntryDate", "EntryPrice",
         "ExitDate", "ExitPrice", "ExitReason", "ClosenessScore", "ProfitRs",
+        "Active Strategy",
     ]
     trades_df = pd.DataFrame(trades, columns=trade_columns)
     summary_df = summarize_trades(trades_df)
@@ -572,6 +580,22 @@ def main():
     summary_df.to_csv(args.summary_out, index=False)
     portfolio_df.to_csv(args.portfolio_out, index=False)
     near_misses_df.to_csv(args.near_misses_out, index=False)
+
+    # Records which strategy this specific run's results belong to, at the
+    # moment the backtest actually ran - NOT re-read from rules.md later,
+    # since rules.md can be swapped to a different strategy afterward
+    # (e.g. via the "Load a previous strategy" modal) without a new
+    # backtest being run. The Stats tab must attribute these numbers to
+    # the strategy that produced them, not to whatever happens to be
+    # loaded in rules.md when it's later viewed.
+    with open(BACKTEST_META_PATH, "w", encoding="utf-8") as f:
+        json.dump({
+            "strategy_name": declared_strategy_name(open(RULES_PATH, encoding="utf-8").read()),
+            "exit_strategy_name": declared_strategy_name(
+                open(EXIT_RULES_PATH, encoding="utf-8").read(), name_field="Exit Strategy Name"
+            ),
+            "initial_capital": args.initial_capital,
+        }, f)
 
     print(f"\n{len(trades_df)} trades simulated.")
     print(summary_df.to_string(index=False))

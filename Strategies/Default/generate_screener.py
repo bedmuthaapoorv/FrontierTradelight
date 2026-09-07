@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 # pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
@@ -9,23 +10,7 @@ from google.genai import types
 
 load_dotenv()
 
-def generate_rules():
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        print("Error: GEMINI_API_KEY environment variable not found.")
-        print("Please create a .env file and add your API key: GEMINI_API_KEY=your_key")
-        sys.exit(1)
-
-    try:
-        with open("rules.md", "r", encoding="utf-8") as f:
-            rules_content = f.read()
-    except FileNotFoundError:
-        print("Error: rules.md not found in the current directory.")
-        sys.exit(1)
-
-    print("Generating python screening logic from rules.md...")
-    
-    prompt = f"""
+EVALUATE_STOCK_PROMPT_TEMPLATE = """
 You are an expert quantitative developer.
 
 Generate production-ready Python code.
@@ -156,7 +141,65 @@ RULES:
 {rules_content}
 """
 
-    client = genai.Client(api_key=api_key)
+SELECT_STRATEGY_PROMPT_TEMPLATE = """
+You are an expert quantitative developer.
+
+Generate production-ready Python code.
+
+The generated file must contain ONLY:
+
+1. All necessary imports (if any - usually none are needed).
+2. A single function:
+
+def select_strategy(market_breadth):
+
+Where market_breadth (float, 0-100) is the percentage of the entire stock
+universe currently trading above its own 50-day moving average, computed
+once per trading day (a broad market regime signal - a stand-in for a
+Nifty benchmark index, since no external index data is available).
+
+The function must return one of these exact string keys: {strategy_keys}
+
+Implement the ROUTING RULES below EXACTLY, checked in the order written -
+the first matching route's key wins. If none match, return the Default
+Strategy's key. Do not invent thresholds or logic not stated below, and do
+not substitute a different scheme.
+
+Requirements:
+
+- Never throw exceptions - if market_breadth is missing/invalid, fall back
+  to the Default Strategy's key.
+- Output ONLY valid Python code.
+- No markdown.
+- No explanations.
+
+ROUTING RULES:
+
+{routing_rules_content}
+"""
+
+
+def _client():
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        print("Error: GEMINI_API_KEY environment variable not found.")
+        print("Please create a .env file and add your API key: GEMINI_API_KEY=your_key")
+        sys.exit(1)
+    return genai.Client(api_key=api_key)
+
+
+def _strip_code_fence(text):
+    code = text.strip()
+    if code.startswith("```python"):
+        code = code[9:]
+    if code.startswith("```"):
+        code = code[3:]
+    if code.endswith("```"):
+        code = code[:-3]
+    return code.strip()
+
+
+def _generate_from_prompt(client, prompt):
     response = client.models.generate_content(
         model='gemini-3.1-flash-lite',
         contents=prompt,
@@ -164,19 +207,158 @@ RULES:
             temperature=0.0,
         )
     )
+    return _strip_code_fence(response.text)
 
-    code = response.text.strip()
-    if code.startswith("```python"):
-        code = code[9:]
-    if code.startswith("```"):
-        code = code[3:]
-    if code.endswith("```"):
-        code = code[:-3]
+
+def generate_evaluate_stock_code(client, rules_content):
+    """Generates a module's worth of code implementing a single strategy's
+    evaluate_stock(symbol, df, universe, sector_ranks, market_breadth) from
+    its rules.md content. Used both for a normal single-strategy rules.md
+    and, once per referenced file, when compiling a router (see
+    generate_router)."""
+    prompt = EVALUATE_STOCK_PROMPT_TEMPLATE.format(rules_content=rules_content)
+    return _generate_from_prompt(client, prompt)
+
+
+def _sanitize_key(name):
+    return re.sub(r"[^a-zA-Z0-9_]+", "_", name.strip()).strip("_") or "strategy"
+
+
+def _parse_referenced_strategies(rules_content):
+    """Parses the "## Referenced Strategies" section into an ordered
+    {sanitized_key: path} dict from lines shaped like "- Key: path/to/file.md".
+    Only lines within that section (up to the next "## " heading or "---")
+    are considered."""
+    match = re.search(
+        r"##\s*Referenced Strategies\s*\n(.*?)(?=\n##\s|\n---|\Z)",
+        rules_content, re.DOTALL,
+    )
+    if not match:
+        return {}
+
+    section = match.group(1)
+    referenced = {}
+    for line in section.splitlines():
+        line_match = re.match(r"\s*-\s*([^:]+):\s*(.+?)\s*$", line)
+        if line_match:
+            key = _sanitize_key(line_match.group(1))
+            path = line_match.group(2).strip()
+            referenced[key] = path
+    return referenced
+
+
+def _extract_default_strategy_name(rules_content):
+    match = re.search(r"###\s*Default Strategy:\s*(.+)", rules_content)
+    return match.group(1).strip() if match else None
+
+
+def _extract_routing_rules_section(rules_content):
+    match = re.search(
+        r"##\s*Routing Rules\s*\n(.*?)(?=\Z)",
+        rules_content, re.DOTALL,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def generate_router(client, rules_content):
+    """Compiles a "router" rules.md (one containing a "## Referenced
+    Strategies" section) into generated_rules.py: a per-referenced-strategy
+    module under generated_strategies/, plus a Gemini-generated
+    select_strategy(market_breadth) routing function, assembled with a
+    hand-written (not Gemini-generated) evaluate_stock() dispatcher so the
+    file exposes the exact same interface stock_screener.py/backtest.py
+    already call for a normal single strategy."""
+    referenced = _parse_referenced_strategies(rules_content)
+    if not referenced:
+        print("Error: '## Referenced Strategies' section found but no '- Key: path' entries parsed.")
+        sys.exit(1)
+
+    default_name = _extract_default_strategy_name(rules_content)
+    default_key = _sanitize_key(default_name) if default_name else None
+    if default_key and default_key not in referenced:
+        print(f"Error: Default Strategy '{default_name}' is not one of the Referenced Strategies: {list(referenced.keys())}.")
+        sys.exit(1)
+
+    strategies_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "generated_strategies")
+    os.makedirs(strategies_dir, exist_ok=True)
+    init_path = os.path.join(strategies_dir, "__init__.py")
+    if not os.path.exists(init_path):
+        open(init_path, "w", encoding="utf-8").close()
+
+    for key, path in referenced.items():
+        if not os.path.exists(path):
+            print(f"Error: Referenced Strategies entry '{key}' points to '{path}', which does not exist.")
+            sys.exit(1)
+
+        print(f"Generating sub-strategy '{key}' from {path}...")
+        with open(path, "r", encoding="utf-8") as f:
+            sub_rules_content = f.read()
+        sub_code = generate_evaluate_stock_code(client, sub_rules_content)
+        with open(os.path.join(strategies_dir, f"{key}.py"), "w", encoding="utf-8") as f:
+            f.write(sub_code)
+
+    print("Generating routing logic from Routing Rules...")
+    routing_rules_content = _extract_routing_rules_section(rules_content)
+    select_prompt = SELECT_STRATEGY_PROMPT_TEMPLATE.format(
+        strategy_keys=", ".join(f'"{k}"' for k in referenced),
+        routing_rules_content=routing_rules_content,
+    )
+    select_strategy_code = _generate_from_prompt(client, select_prompt)
+
+    import_lines = "\n".join(f"from generated_strategies import {key} as _s_{key}" for key in referenced)
+    dict_entries = ", ".join(f'"{key}": _s_{key}' for key in referenced)
+    fallback_key = default_key or next(iter(referenced))
+
+    assembled = f'''"""Auto-generated router: compiled from rules.md's "Referenced Strategies"
+and "Routing Rules" sections by generate_screener.py. Do not edit by hand -
+edit rules.md and regenerate instead."""
+
+{import_lines}
+
+{select_strategy_code}
+
+_STRATEGIES = {{{dict_entries}}}
+_FALLBACK_KEY = "{fallback_key}"
+
+
+def evaluate_stock(symbol, df, universe, sector_ranks, market_breadth):
+    try:
+        active_key = select_strategy(market_breadth)
+        if active_key not in _STRATEGIES:
+            active_key = _FALLBACK_KEY
+    except Exception:
+        active_key = _FALLBACK_KEY
+
+    result = _STRATEGIES[active_key].evaluate_stock(symbol, df, universe, sector_ranks, market_breadth)
+    result.setdefault("Details", {{}})["Active Strategy"] = active_key
+    return result
+'''
 
     with open("generated_rules.py", "w", encoding="utf-8") as f:
-        f.write(code)
+        f.write(assembled)
 
-    print("Successfully generated generated_rules.py!")
+    print(f"Successfully generated generated_rules.py (router over {list(referenced.keys())})!")
+
+
+def generate_rules():
+    try:
+        with open("rules.md", "r", encoding="utf-8") as f:
+            rules_content = f.read()
+    except FileNotFoundError:
+        print("Error: rules.md not found in the current directory.")
+        sys.exit(1)
+
+    client = _client()
+
+    if "## Referenced Strategies" in rules_content:
+        generate_router(client, rules_content)
+    else:
+        print("Generating python screening logic from rules.md...")
+        code = generate_evaluate_stock_code(client, rules_content)
+        with open("generated_rules.py", "w", encoding="utf-8") as f:
+            f.write(code)
+        print("Successfully generated generated_rules.py!")
+
 
 if __name__ == "__main__":
     generate_rules()

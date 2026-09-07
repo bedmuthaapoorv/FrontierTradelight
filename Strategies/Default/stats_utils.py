@@ -8,7 +8,7 @@ from datetime import datetime
 
 import pandas as pd
 
-COLUMNS = ["Strategy Name", "CAGR (%/yr)", "Max Drawdown (%)", "Composite Score", "Last Updated"]
+COLUMNS = ["Strategy Name", "Exit Strategy Name", "CAGR (%/yr)", "Max Drawdown (%)", "Composite Score", "Last Updated"]
 
 
 def load_strategy_stats(path):
@@ -17,10 +17,16 @@ def load_strategy_stats(path):
     return pd.read_csv(path)
 
 
-def upsert_strategy_stats(path, strategy_name, cagr_pct, max_dd_pct, composite_score):
+def upsert_strategy_stats(path, strategy_name, cagr_pct, max_dd_pct, composite_score, exit_strategy_name=None):
     """Overwrites the row for strategy_name with its latest stats, leaving
     every other strategy's previously saved row untouched. Does nothing if
-    strategy_name is blank (rules.md has no declared "Strategy Name")."""
+    strategy_name is blank (rules.md has no declared "Strategy Name").
+
+    Note: rows are keyed by strategy_name alone, not by (strategy_name,
+    exit_strategy_name) - backtesting the same rules.md with a different
+    exit strategy overwrites the same row rather than creating a second
+    one. Exit Strategy Name is recorded so you can see which exit produced
+    the numbers currently shown, not to distinguish multiple rows."""
     if not strategy_name:
         return
 
@@ -29,6 +35,7 @@ def upsert_strategy_stats(path, strategy_name, cagr_pct, max_dd_pct, composite_s
 
     new_row = pd.DataFrame([{
         "Strategy Name": strategy_name,
+        "Exit Strategy Name": exit_strategy_name or "",
         "CAGR (%/yr)": cagr_pct,
         "Max Drawdown (%)": max_dd_pct,
         "Composite Score": composite_score,

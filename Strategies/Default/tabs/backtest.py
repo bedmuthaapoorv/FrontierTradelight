@@ -1,5 +1,6 @@
 """Backtest generated_rules.py + generated_exit_strategy.py over a date range."""
 
+import json
 import os
 import subprocess
 import sys
@@ -11,18 +12,37 @@ import backtest as backtest_engine
 import inflation_utils
 import nifty_utils
 import strings
-from backup_utils import declared_strategy_name
 from constants import (
     APP_DIR,
     BACKTEST_LOG_PATH,
+    BACKTEST_META_PATH,
     BACKTEST_PORTFOLIO_PATH,
     BACKTEST_SUMMARY_PATH,
     BACKTEST_TRADES_PATH,
-    RULES_PATH,
     STRATEGY_STATS_PATH,
 )
 from stats_utils import upsert_strategy_stats
 from ui_helpers import nonempty_csv_exists, read_text, show_guide
+
+
+def _backtested_meta():
+    """The strategy/exit-strategy names the CURRENT backtest_portfolio.csv
+    actually belongs to - recorded by backtest.py at the moment it ran,
+    not re-read from rules.md/exit_rules.md now, since either can be
+    swapped to a different strategy afterward without a new backtest
+    being run. Returns (None, None) (skip recording, rather than guess)
+    for results produced before this tracking existed - falling back to
+    "whatever's live now" is exactly the bug this replaces: it would
+    misattribute an old backtest's numbers to whatever strategy happens
+    to be loaded when the file is missing."""
+    if os.path.exists(BACKTEST_META_PATH):
+        try:
+            with open(BACKTEST_META_PATH, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            return meta.get("strategy_name") or None, meta.get("exit_strategy_name") or None
+        except (json.JSONDecodeError, OSError):
+            return None, None
+    return None, None
 
 TITLE = "Backtest"
 ORDER = 50
@@ -184,10 +204,18 @@ def render_portfolio_result(initial_capital):
             # call on every render (not just right after a fresh run) since
             # it just re-upserts the same values when nothing has changed -
             # the values themselves only change when a new backtest actually
-            # overwrites BACKTEST_PORTFOLIO_PATH.
-            if cagr_pct is not None:
-                strategy_name = declared_strategy_name(read_text(RULES_PATH))
-                upsert_strategy_stats(STRATEGY_STATS_PATH, strategy_name, cagr_pct, max_dd_pct, composite_score)
+            # overwrites BACKTEST_PORTFOLIO_PATH. Uses the strategy/exit
+            # names recorded AT BACKTEST-RUN TIME (see _backtested_meta),
+            # not whatever's currently in rules.md/exit_rules.md - otherwise
+            # loading a different strategy via the restore modal without
+            # re-running a backtest would misattribute this old backtest's
+            # numbers to the newly loaded strategy's row.
+            strategy_name, exit_strategy_name = _backtested_meta()
+            if cagr_pct is not None and strategy_name:
+                upsert_strategy_stats(
+                    STRATEGY_STATS_PATH, strategy_name, cagr_pct, max_dd_pct, composite_score,
+                    exit_strategy_name=exit_strategy_name,
+                )
 
             show_inflation_adjusted = st.checkbox(
                 "Show inflation-adjusted results", help=strings.INFLATION_ADJUSTED_HELP
