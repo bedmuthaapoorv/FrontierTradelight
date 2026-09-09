@@ -1,0 +1,10 @@
+{
+  "name": "frontier-tradelight",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n backend,frontend -c blue,magenta \"uvicorn api.main:app --reload --port 8000 --app-dir Default\" \"npm run dev --prefix frontend\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
