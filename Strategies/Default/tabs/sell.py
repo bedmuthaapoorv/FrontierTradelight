@@ -39,17 +39,7 @@ def render_exit_strategy_editor():
     load_into_session("exit_rules_content", EXIT_RULES_PATH)
 
     with st.expander("Exit strategy rules", expanded=False):
-        edited_exit_rules = editable_markdown("exit_rules_content", "Exit strategy rules", 300)
-
-        exit_save_col, exit_gen_col = st.columns(2)
-        with exit_save_col:
-            if st.button("Save exit_rules.md"):
-                save_with_backup(
-                    EXIT_RULES_PATH, EXIT_BACKUP_DIR, "exit_rules", "ExitRules_backup",
-                    edited_exit_rules, "exit_rules_content",
-                )
-                st.success("Saved exit_rules.md")
-
+        exit_gen_col, exit_save_col = st.columns(2)
         with exit_gen_col:
             run_script_with_feedback(
                 "Generate exit strategy",
@@ -57,6 +47,16 @@ def render_exit_strategy_editor():
                 "Generating exit logic...",
                 "generated_exit_strategy.py updated.",
             )
+
+        edited_exit_rules = editable_markdown("exit_rules_content", "Exit strategy rules", 300)
+
+        with exit_save_col:
+            if st.button("Save exit_rules.md"):
+                save_with_backup(
+                    EXIT_RULES_PATH, EXIT_BACKUP_DIR, "exit_rules", "ExitRules_backup",
+                    edited_exit_rules, "exit_rules_content",
+                )
+                st.success("Saved exit_rules.md")
 
     backup_restore_modal(
         modal_title="Load a previous exit strategy",

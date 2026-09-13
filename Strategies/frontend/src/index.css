@@ -3,14 +3,36 @@
 @tailwind utilities;
 
 :root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  font-family: 'Manrope', system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
-  color-scheme: light dark;
+  color-scheme: light;
 }
 
 body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  background: #F7F7F8;
+  color: #111318;
+}
+
+a {
+  color: #3D5944;
+}
+a:hover {
+  color: #314839;
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-thumb {
+  background: #D8D8DC;
+  border-radius: 8px;
+  border: 2px solid #F7F7F8;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
 }

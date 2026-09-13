@@ -8,11 +8,22 @@ from jugaad_data.nse import stock_df
 
 def fetch_stock_history(symbol, from_date, to_date, series="EQ", retries=3, backoff_seconds=2):
     """Fetch NSE history for a symbol, retrying transient failures (rate
-    limiting / bot-detection blocks show up as empty or non-JSON responses)."""
+    limiting / bot-detection blocks show up as empty or non-JSON responses).
+
+    jugaad_data's `series` argument is not reliable as a filter: for some
+    symbols (e.g. NTPC, which also has several bond/NCD series like N1, N6,
+    NA sharing the same base symbol) it silently returns EVERY series for
+    that symbol, not just the one requested - multiple unrelated
+    instruments' prices interleaved under the same DATE. Re-filtering by
+    the returned SERIES column ourselves is the only reliable way to get
+    just the equity series actually asked for."""
     last_error = None
     for attempt in range(retries):
         try:
-            return stock_df(symbol=symbol, from_date=from_date, to_date=to_date, series=series)
+            df = stock_df(symbol=symbol, from_date=from_date, to_date=to_date, series=series)
+            if df is not None and not df.empty and "SERIES" in df.columns:
+                df = df[df["SERIES"] == series]
+            return df
         except Exception as e:
             last_error = e
             if attempt < retries - 1:

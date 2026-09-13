@@ -1,111 +1,115 @@
 import pandas as pd
-import pandas_ta as ta
 import numpy as np
+import pandas_ta as ta
+from scipy.signal import argrelextrema
 
 def evaluate_stock(symbol, df, universe, sector_ranks, market_breadth):
-    results = {
-        "Symbol": symbol,
-        "Passed": False,
-        "ClosenessScore": 0.0,
-        "FailedRules": [],
-        "Details": {}
-    }
-
+    failed_rules = []
+    details = {}
+    
     try:
-        if df is None or len(df) < 126:
-            results["FailedRules"].append("Insufficient data history")
-            return results
+        if len(df) < 60:
+            return {"Symbol": symbol, "Passed": False, "ClosenessScore": 0.0, "FailedRules": ["Insufficient data"], "Details": {}}
 
-        # Data preparation
+        # Pre-calculations
         close = df['close']
-        volume = df['volume']
+        low = df['low']
+        vol = df['volume']
+        turnover = vol * close
+        ma20_turnover = turnover.rolling(20).mean().iloc[-1]
+        ma100 = ta.sma(close, length=100)
+        atr14 = ta.atr(df['high'], df['low'], close, length=14).iloc[-1]
+        rsi14 = ta.rsi(close, length=14).iloc[-1]
         
-        # Indicators
-        ma20 = ta.sma(close, length=20)
-        ma50 = ta.sma(close, length=50)
-        ma126 = ta.sma(close, length=126)
-        rsi = ta.rsi(close, length=14)
-        vol_ma20 = ta.sma(volume, length=20)
-        
-        # Current values
-        curr_close = close.iloc[-1]
-        prev_close = close.iloc[-2]
-        prev20_close = close.iloc[-21] if len(df) >= 21 else close.iloc[0]
-        
-        curr_vol = volume.iloc[-1]
-        prev_vol = volume.iloc[-2]
-        curr_vol_ma20 = vol_ma20.iloc[-1]
-        
-        curr_ma20 = ma20.iloc[-1]
-        curr_ma50 = ma50.iloc[-1]
-        curr_ma126 = ma126.iloc[-1]
-        curr_rsi = rsi.iloc[-1]
-        
-        highest_close_20 = close.iloc[-20:].max()
-        
-        # Metadata
-        stock_info = universe.get(symbol, {"Name": "Unknown", "Sector": "Unknown"})
-        sector_rank = sector_ranks.get(symbol, 99)
-        
-        # Mandatory Rules
-        failed = []
-        
-        if not (curr_vol_ma20 >= 100000 and curr_close >= 50):
-            failed.append("Liquidity floor not met")
+        # Rule 1: Liquidity
+        if ma20_turnover < 50000000 or close.iloc[-1] < 50:
+            failed_rules.append("Liquidity floor not met")
             
-        if not (curr_close > curr_ma20 > curr_ma50 > curr_ma126):
-            failed.append("Trend structure (MA stack) not met")
+        # Rule 2: Uptrend
+        if not (close.iloc[-1] > ma100.iloc[-1] and ma100.iloc[-1] > ma100.iloc[-10]):
+            failed_rules.append("Not in uptrend")
             
-        if not (55 <= curr_rsi <= 75):
-            failed.append(f"RSI outside range ({curr_rsi:.1f})")
+        # Rule 3: Trendline
+        winning_line = None
+        for window in [250, 150, 100, 60]:
+            if len(df) < window: continue
+            subset = df.iloc[-window:].reset_index(drop=True)
+            pivot_indices = argrelextrema(subset['low'].values, np.less_equal, order=4)[0]
+            if len(pivot_indices) < 3: continue
             
-        if not (prev_vol > volume.iloc[-3] and prev_vol >= 1.3 * vol_ma20.iloc[-2]):
-            failed.append("Volume confirmation not met")
+            fit_indices = pivot_indices.copy()
+            fit_lows = subset['low'].iloc[fit_indices].values
             
-        if not (curr_close >= 0.98 * highest_close_20 and curr_close > prev_close):
-            failed.append("Breakout proximity not met")
+            # Robust refinement
+            max_outliers = int(np.ceil(0.1 * len(pivot_indices)))
+            for _ in range(max_outliers):
+                coeffs = np.polyfit(fit_indices, fit_lows, 1)
+                slope, intercept = coeffs[0], coeffs[1]
+                residuals = fit_lows - (slope * fit_indices + intercept)
+                worst_idx = np.argmin(residuals)
+                if residuals[worst_idx] < -1.0 * atr14:
+                    fit_indices = np.delete(fit_indices, worst_idx)
+                    fit_lows = np.delete(fit_lows, worst_idx)
+                else: break
             
-        if not (curr_close <= 1.25 * prev20_close):
-            failed.append("Stock extended too far")
+            if slope <= 0: continue
             
-        if not (sector_rank <= 10):
-            failed.append(f"Sector rank {sector_rank} not in top 10")
+            touches = sum(1 for i in pivot_indices if abs(subset['low'].iloc[i] - (slope * i + intercept)) <= 1.0 * atr14)
+            if touches < 4: continue
             
-        if not (market_breadth >= 45):
-            failed.append(f"Market breadth {market_breadth} below threshold")
+            broken = all((subset['close'].iloc[-3:] - (slope * np.arange(window-3, window) + intercept)) < -1.5 * atr14)
+            if broken: continue
+            
+            winning_line = {'slope': slope, 'intercept': intercept, 'touches': touches, 'window': window, 'proj': slope * (window - 1) + intercept}
+            break
+            
+        if not winning_line:
+            failed_rules.append("No valid ascending trendline")
+        
+        # Rule 4: Bounce
+        if winning_line:
+            if not (low.iloc[-1] <= winning_line['proj'] + (1.0 * atr14) and close.iloc[-1] > close.iloc[-2] and vol.iloc[-1] >= 1.2 * vol.rolling(20).mean().iloc[-1]):
+                failed_rules.append("Bounce confirmation failed")
+        
+        # Rule 5: RSI
+        if not (35 <= rsi14 <= 55):
+            failed_rules.append(f"RSI outside range ({rsi14:.1f})")
+            
+        # Rule 6: Extension
+        if not (close.iloc[-1] <= 1.15 * close.iloc[-10]):
+            failed_rules.append("Already extended")
+            
+        # Rule 7: Sector
+        rank = sector_ranks.get(symbol, 99)
+        if rank > 10:
+            failed_rules.append(f"Sector rank {rank} not in top 10")
+            
+        # Rule 8: Breadth
+        if market_breadth < 45:
+            failed_rules.append("Market breadth too low")
 
-        # Details population
-        results["Details"] = {
-            "Company Name": stock_info["Name"],
-            "Sector": stock_info["Sector"],
-            "Sector Rank": sector_rank,
-            "Current Price": curr_close,
-            "Daily RSI(14)": curr_rsi,
-            "Volume[-1]": prev_vol,
-            "Volume[-2]": volume.iloc[-3],
-            "20D Average Volume": vol_ma20.iloc[-2],
-            "Volume[-1] / 20D Avg (ratio)": prev_vol / vol_ma20.iloc[-2] if vol_ma20.iloc[-2] > 0 else 0,
-            "20-Day High": highest_close_20,
-            "Distance From 20-Day High (%)": ((highest_close_20 - curr_close) / highest_close_20) * 100,
-            "Close vs Close[-20] (%)": ((curr_close - prev20_close) / prev20_close) * 100
-        }
-
+        passed = len(failed_rules) == 0
+        
         # Scoring
-        if not failed:
-            s_score = max(0, 100 - (sector_rank - 1) * 10)
-            v_score = min(100, (prev_vol / vol_ma20.iloc[-2]) * 40)
-            b_score = max(0, 100 - ((highest_close_20 - curr_close) / highest_close_20 * 100) * 30)
-            r_score = max(0, 100 - abs(curr_rsi - 65) * 4)
-            
-            rank_score = (0.3 * s_score) + (0.3 * v_score) + (0.25 * b_score) + (0.15 * r_score)
-            results["ClosenessScore"] = rank_score
-            results["Details"]["Rank Score"] = rank_score
-            results["Passed"] = True
-        else:
-            results["FailedRules"] = failed
-            results["ClosenessScore"] = 0.0
+        score = 0.0
+        if passed:
+            dist_atr = abs(close.iloc[-1] - winning_line['proj']) / atr14
+            score = (0.3 * min(100, winning_line['touches'] * 20) +
+                     0.25 * min(100, (vol.iloc[-1] / vol.rolling(20).mean().iloc[-1]) * 50) +
+                     0.2 * max(0, 100 - (rank - 1) * 10) +
+                     0.15 * max(0, 100 - abs(rsi14 - 45) * 5) +
+                     0.1 * max(0, 100 - (dist_atr * 100)))
+
+        details.update({
+            "RSI": rsi14, "Sector Rank": rank, "Trendline Touches": winning_line['touches'] if winning_line else 0,
+            "Distance From Trendline (ATR units)": abs(close.iloc[-1] - winning_line['proj'])/atr14 if winning_line else 0,
+            "Volume[-1]": vol.iloc[-1], "20D Average Volume": vol.rolling(20).mean().iloc[-1],
+            "Ideal Entry Price Low": close.iloc[-1], "Ideal Entry Price High": close.iloc[-1] * 1.01,
+            "Company Name": universe.get(symbol, {}).get("Name", "N/A"), "Sector": universe.get(symbol, {}).get("Sector", "N/A"),
+            "Current Price": close.iloc[-1], "Rank Score": score
+        })
+
+        return {"Symbol": symbol, "Passed": passed, "ClosenessScore": score, "FailedRules": failed_rules, "Details": details}
 
     except Exception as e:
-        results["FailedRules"].append(f"Calculation error: {str(e)}")
-        
-    return results
+        return {"Symbol": symbol, "Passed": False, "ClosenessScore": 0.0, "FailedRules": [f"Calculation error: {e}"], "Details": {}}

@@ -16,14 +16,50 @@ for rules/exit-rules/jobs/results/stats get added in later phases.
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.routers.backtest import router as backtest_router
+from api.routers.holdings import router as holdings_router
+from api.routers.jobs import router as jobs_router
+from api.routers.markdown_files import make_markdown_router
+from api.routers.results import make_report_router
+from constants import (
+    BACKTEST_SUMMARY_PATH,
+    BACKTEST_TRADES_PATH,
+    BACKUP_DIR,
+    EXIT_BACKUP_DIR,
+    EXIT_RULES_PATH,
+    REPORT_PATH,
+    RULES_PATH,
+    SELL_REPORT_PATH,
+)
+
 app = FastAPI(title="Frontier TradeLight API")
 
-# Vite's default dev server origin. Widen this (or make it configurable)
-# once there's a real deployment target - hardcoded to localhost during
-# the phased migration since this is a local personal tool.
+app.include_router(
+    make_markdown_router(
+        prefix="/rules", path=RULES_PATH, backup_dir=BACKUP_DIR, backup_suffix="rules",
+    )
+)
+app.include_router(
+    make_markdown_router(
+        prefix="/exit-rules", path=EXIT_RULES_PATH, backup_dir=EXIT_BACKUP_DIR, backup_suffix="exit_rules",
+    )
+)
+app.include_router(jobs_router)
+app.include_router(make_report_router(prefix="/results", path=REPORT_PATH))
+app.include_router(make_report_router(prefix="/sell-report", path=SELL_REPORT_PATH))
+app.include_router(make_report_router(prefix="/backtest-trades", path=BACKTEST_TRADES_PATH))
+app.include_router(make_report_router(prefix="/backtest-summary", path=BACKTEST_SUMMARY_PATH))
+app.include_router(holdings_router)
+app.include_router(backtest_router)
+
+# Vite picks the next free port (5173, 5174, ...) if 5173 is already
+# taken, e.g. by another dev instance - match any localhost port instead
+# of hardcoding 5173, so CORS doesn't silently break depending on which
+# port Vite happened to bind to. Still localhost-only, fine for this
+# local personal tool.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origin_regex=r"http://localhost:\d+",
     allow_methods=["*"],
     allow_headers=["*"],
 )
