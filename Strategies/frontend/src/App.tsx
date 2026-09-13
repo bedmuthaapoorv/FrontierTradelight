@@ -7,6 +7,8 @@ import Results from './pages/Results'
 import Sell from './pages/Sell'
 import Backtest from './pages/Backtest'
 import DeepDive from './pages/DeepDive'
+import MissedOpportunities from './pages/MissedOpportunities'
+import Stats from './pages/Stats'
 
 const API_BASE_URL = 'http://localhost:8000'
 
@@ -113,8 +115,8 @@ function App() {
           <Route path="/sell" element={<Sell />} />
           <Route path="/backtest" element={<Backtest />} />
           <Route path="/deep-dive" element={<DeepDive />} />
-          <Route path="/missed-opportunities" element={<Placeholder title="Missed Opportunities" />} />
-          <Route path="/stats" element={<Placeholder title="Stats" />} />
+          <Route path="/missed-opportunities" element={<MissedOpportunities />} />
+          <Route path="/stats" element={<Stats />} />
           <Route path="*" element={<Rules />} />
         </Routes>
       </div>

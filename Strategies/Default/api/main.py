@@ -20,7 +20,9 @@ from api.routers.backtest import router as backtest_router
 from api.routers.holdings import router as holdings_router
 from api.routers.jobs import router as jobs_router
 from api.routers.markdown_files import make_markdown_router
+from api.routers.missed_opportunities import router as missed_opportunities_router
 from api.routers.results import make_report_router
+from api.routers.stats import router as stats_router
 from constants import (
     BACKTEST_SUMMARY_PATH,
     BACKTEST_TRADES_PATH,
@@ -51,6 +53,8 @@ app.include_router(make_report_router(prefix="/backtest-trades", path=BACKTEST_T
 app.include_router(make_report_router(prefix="/backtest-summary", path=BACKTEST_SUMMARY_PATH))
 app.include_router(holdings_router)
 app.include_router(backtest_router)
+app.include_router(missed_opportunities_router)
+app.include_router(stats_router)
 
 # Vite picks the next free port (5173, 5174, ...) if 5173 is already
 # taken, e.g. by another dev instance - match any localhost port instead

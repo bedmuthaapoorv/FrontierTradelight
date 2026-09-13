@@ -199,3 +199,69 @@ export const backtestApi = {
   yearly: () => request<{ rows: YearlyRow[] }>('/backtest/yearly'),
   portfolioByYear: () => request<PortfolioByYear>('/backtest/portfolio-by-year'),
 }
+
+export interface MissedOpportunitiesRuleRow {
+  rule: string
+  count: number
+  avg_forward_return_pct: number
+  win_rate_pct: number
+}
+
+export interface MissedOpportunitiesTopRow {
+  date: string
+  symbol: string
+  reason: string
+  closeness_score: number
+  forward_return_pct: number
+}
+
+export interface MissedOpportunities {
+  available: boolean
+  strategy_name?: string | null
+  exit_strategy_name?: string | null
+  realized_avg_profit?: number | null
+  realized_win_rate?: number | null
+  rule_rows?: MissedOpportunitiesRuleRow[]
+  top_rows?: MissedOpportunitiesTopRow[]
+}
+
+/** Client for api/routers/missed_opportunities.py - near-misses grouped by
+ * blocking rule plus the realized-trade benchmark, mirroring
+ * tabs/missed_opportunities.py's aggregation exactly. */
+export const missedOpportunitiesApi = {
+  get: () => request<MissedOpportunities>('/missed-opportunities'),
+}
+
+export interface StatsRow {
+  strategy_name: string
+  exit_strategy_name: string | null
+  cagr_pct: number | null
+  max_dd_pct: number | null
+  composite_score: number | null
+  last_updated: string
+}
+
+export interface Stats {
+  benchmark_start: string
+  benchmark_end: string
+  rows: StatsRow[]
+}
+
+export interface StrategyOption {
+  key: string
+  label: string
+}
+
+/** Client for api/routers/stats.py - the strategy leaderboard and the
+ * strategy-switch flow used before a benchmark backtest, mirroring
+ * tabs/stats.py exactly. Actually running the benchmark reuses
+ * backtestApi.run/status with the fixed benchmark date range. */
+export const statsApi = {
+  get: () => request<Stats>('/stats'),
+  strategyOptions: () => request<{ options: StrategyOption[] }>('/stats/strategy-options'),
+  loadStrategy: (groupKey: string) =>
+    request<{ status: string; message?: string }>('/stats/load-strategy', {
+      method: 'POST',
+      body: JSON.stringify({ group_key: groupKey }),
+    }),
+}
