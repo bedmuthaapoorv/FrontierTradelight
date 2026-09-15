@@ -39,3 +39,18 @@ BACKTEST_CACHE_DIR = os.path.join(DATA_DIR, "backtest_cache")
 UNIVERSE_CACHE_PATH = os.path.join(DATA_DIR, "universe_cache.json")
 INFLATION_CACHE_PATH = os.path.join(DATA_DIR, "inflation_cache.json")
 NIFTY50_CACHE_PATH = os.path.join(DATA_DIR, "nifty50_cache.json")
+
+# Fund Manager - the real-money fund's own records (NAV/units accounting for
+# investors), kept in their own folder and entirely separate from the
+# backtest engine's data above: the backtest is a research tool for
+# evaluating strategies against history, the fund's numbers are never
+# derived from it.
+FUND_DATA_DIR = os.path.join(DATA_DIR, "fund")
+os.makedirs(FUND_DATA_DIR, exist_ok=True)
+
+FUND_INVESTORS_PATH = os.path.join(FUND_DATA_DIR, "investors.csv")
+FUND_CAPITAL_EVENTS_PATH = os.path.join(FUND_DATA_DIR, "capital_events.csv")
+FUND_NAV_HISTORY_PATH = os.path.join(FUND_DATA_DIR, "nav_history.csv")
+FUND_HOLDINGS_PATH = os.path.join(FUND_DATA_DIR, "fund_holdings.csv")
+FUND_CASH_PATH = os.path.join(FUND_DATA_DIR, "cash.json")
+FUND_GENERATION_PATH = os.path.join(FUND_DATA_DIR, "generation.json")

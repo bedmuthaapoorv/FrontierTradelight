@@ -265,3 +265,86 @@ export const statsApi = {
       body: JSON.stringify({ group_key: groupKey }),
     }),
 }
+
+export interface FundNavPoint {
+  date: string
+  nav: number
+}
+
+export interface FundCapitalEvent {
+  index: number
+  date: string
+  investor_id: string
+  type: 'DEPOSIT' | 'WITHDRAWAL'
+  amount: number
+  units: number
+}
+
+export interface FundInvestorRow {
+  investor_id: string
+  name: string
+  email: string
+  join_date: string
+  units_held: number
+  current_value: number
+  return_pct: number | null
+}
+
+export interface FundOverview {
+  aum: number
+  nav: number
+  total_units: number
+  investor_count: number
+  nav_history: FundNavPoint[]
+  recent_capital_events: FundCapitalEvent[]
+  investors: FundInvestorRow[]
+}
+
+export interface FundHoldingRow {
+  Symbol: string
+  Qty: number
+  AvgCost: number
+  CurrentPrice: number
+}
+
+/** Client for api/routers/fund_manager.py - the real-money fund's NAV/units
+ * dashboard, entirely separate from the backtest engine. Fund holdings here
+ * are a distinct record from the personal Holdings/Sell tab's holdingsApi. */
+export const fundManagerApi = {
+  overview: () => request<FundOverview>('/fund-manager/overview'),
+  calculateNav: () =>
+    request<{ status: string; message?: string; date?: string; aum?: number; total_units?: number; nav?: number }>(
+      '/fund-manager/nav/calculate',
+      { method: 'POST' },
+    ),
+  holdings: () => request<{ holdings: FundHoldingRow[]; cash: number }>('/fund-manager/holdings'),
+  saveHoldings: (holdings: FundHoldingRow[], cash: number) =>
+    request<{ status: string; count: number }>('/fund-manager/holdings', {
+      method: 'PUT',
+      body: JSON.stringify({ holdings, cash }),
+    }),
+  addInvestor: (investorId: string, name: string, email: string, joinDate: string) =>
+    request<{ status: string }>('/fund-manager/investors', {
+      method: 'POST',
+      body: JSON.stringify({ investor_id: investorId, name, email, join_date: joinDate }),
+    }),
+  removeInvestor: (investorId: string) =>
+    request<{ status: string; message?: string }>(`/fund-manager/investors/${encodeURIComponent(investorId)}`, {
+      method: 'DELETE',
+    }),
+  addCapitalEvent: (
+    date: string,
+    investorId: string,
+    type: 'DEPOSIT' | 'WITHDRAWAL',
+    amount: number,
+    navOverride?: number,
+  ) =>
+    request<{ status: string; message?: string; nav?: number; units?: number }>('/fund-manager/capital-events', {
+      method: 'POST',
+      body: JSON.stringify({ date, investor_id: investorId, type, amount, nav_override: navOverride ?? null }),
+    }),
+  removeCapitalEvent: (rowIndex: number) =>
+    request<{ status: string; message?: string }>(`/fund-manager/capital-events/${rowIndex}`, {
+      method: 'DELETE',
+    }),
+}

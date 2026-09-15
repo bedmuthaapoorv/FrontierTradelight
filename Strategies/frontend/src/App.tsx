@@ -9,6 +9,7 @@ import Backtest from './pages/Backtest'
 import DeepDive from './pages/DeepDive'
 import MissedOpportunities from './pages/MissedOpportunities'
 import Stats from './pages/Stats'
+import FundManager from './pages/FundManager'
 
 const API_BASE_URL = 'http://localhost:8000'
 
@@ -86,40 +87,57 @@ function BackendStatus() {
   )
 }
 
+/** The tabbed app's own chrome (header + nav) - everything except Fund
+ * Manager, which is a separate view with its own header and is
+ * deliberately not one of these tabs. */
+function AppShell() {
+  return (
+    <div className="flex h-screen flex-col overflow-hidden bg-[#F7F7F8] text-gray-900">
+      <header className="flex flex-shrink-0 items-center justify-between border-b border-gray-200 bg-white px-7 py-3.5">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-[26px] w-[26px] flex-shrink-0 items-center justify-center rounded-[7px] bg-accent">
+            <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+              <path
+                transform="translate(3,5.55) scale(0.1041) translate(-65,-33)"
+                d="M229.592 92.2116C232.959 93.5674 232.925 98.3461 229.538 99.6536L99.6326 149.815C95.9576 151.234 92.6606 147.046 94.903 143.807L110.942 120.639C112.374 118.57 111.564 115.709 109.26 114.699L74.1763 99.3083C71.0127 97.9205 70.9777 93.4449 74.1193 92.0078L109.156 75.9805C111.392 74.9577 112.185 72.1788 110.825 70.1305L94.6287 45.7365C92.4555 42.4633 95.8105 38.346 99.4551 39.8135L229.592 92.2116Z"
+                fill="#FFFFFF"
+              />
+            </svg>
+          </div>
+          <h1 className="text-[15px] font-extrabold tracking-tight">Frontier TradeLight</h1>
+        </div>
+        <div className="flex items-center gap-4">
+          <Link to="/fund-manager" className="text-xs font-semibold text-gray-500 no-underline hover:text-gray-900">
+            Fund Manager
+          </Link>
+          <BackendStatus />
+        </div>
+      </header>
+
+      <NavBar />
+
+      <Routes>
+        <Route path="/rules" element={<Rules />} />
+        <Route path="/run" element={<Run />} />
+        <Route path="/results" element={<Results />} />
+        <Route path="/sell" element={<Sell />} />
+        <Route path="/backtest" element={<Backtest />} />
+        <Route path="/deep-dive" element={<DeepDive />} />
+        <Route path="/missed-opportunities" element={<MissedOpportunities />} />
+        <Route path="/stats" element={<Stats />} />
+        <Route path="*" element={<Rules />} />
+      </Routes>
+    </div>
+  )
+}
+
 function App() {
   return (
     <BrowserRouter>
-      <div className="flex h-screen flex-col overflow-hidden bg-[#F7F7F8] text-gray-900">
-        <header className="flex flex-shrink-0 items-center justify-between border-b border-gray-200 bg-white px-7 py-3.5">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-[26px] w-[26px] flex-shrink-0 items-center justify-center rounded-[7px] bg-accent">
-              <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                <path
-                  transform="translate(3,5.55) scale(0.1041) translate(-65,-33)"
-                  d="M229.592 92.2116C232.959 93.5674 232.925 98.3461 229.538 99.6536L99.6326 149.815C95.9576 151.234 92.6606 147.046 94.903 143.807L110.942 120.639C112.374 118.57 111.564 115.709 109.26 114.699L74.1763 99.3083C71.0127 97.9205 70.9777 93.4449 74.1193 92.0078L109.156 75.9805C111.392 74.9577 112.185 72.1788 110.825 70.1305L94.6287 45.7365C92.4555 42.4633 95.8105 38.346 99.4551 39.8135L229.592 92.2116Z"
-                  fill="#FFFFFF"
-                />
-              </svg>
-            </div>
-            <h1 className="text-[15px] font-extrabold tracking-tight">Frontier TradeLight</h1>
-          </div>
-          <BackendStatus />
-        </header>
-
-        <NavBar />
-
-        <Routes>
-          <Route path="/rules" element={<Rules />} />
-          <Route path="/run" element={<Run />} />
-          <Route path="/results" element={<Results />} />
-          <Route path="/sell" element={<Sell />} />
-          <Route path="/backtest" element={<Backtest />} />
-          <Route path="/deep-dive" element={<DeepDive />} />
-          <Route path="/missed-opportunities" element={<MissedOpportunities />} />
-          <Route path="/stats" element={<Stats />} />
-          <Route path="*" element={<Rules />} />
-        </Routes>
-      </div>
+      <Routes>
+        <Route path="/fund-manager" element={<FundManager />} />
+        <Route path="/*" element={<AppShell />} />
+      </Routes>
     </BrowserRouter>
   )
 }
