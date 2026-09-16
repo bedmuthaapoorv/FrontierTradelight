@@ -12,6 +12,33 @@ interface VersionDrawerProps {
   onOpenChange: (open: boolean) => void
 }
 
+/** Parses the "_YYYYMMDD_HHMMSS" suffix backup_utils.backup_markdown always
+ * appends before ".md", and formats it for display - a manually renamed
+ * backup (see rename_backup) loses this suffix, so falls back to null and
+ * the raw filename is shown instead. */
+function parseBackupTimestamp(filename: string): Date | null {
+  const match = filename.match(/_(\d{8})_(\d{6})\.md$/)
+  if (!match) return null
+  const [, ymd, hms] = match
+  const year = Number(ymd.slice(0, 4))
+  const month = Number(ymd.slice(4, 6)) - 1
+  const day = Number(ymd.slice(6, 8))
+  const hour = Number(hms.slice(0, 2))
+  const minute = Number(hms.slice(2, 4))
+  const second = Number(hms.slice(4, 6))
+  return new Date(year, month, day, hour, minute, second)
+}
+
+function formatBackupTimestamp(date: Date): string {
+  return date.toLocaleString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}
+
 /** Collapsible right-hand panel listing every backup, grouped by strategy,
  * with every version visible at once (no drill-down) - mirrors
  * ui_helpers.backup_restore_section + manage_backup_file, but laid out as
@@ -205,18 +232,30 @@ export default function VersionDrawer({ api, onRestored, onMessage, open, onOpen
 
               {isExpanded && (
                 <div className="flex flex-col gap-px py-0.5 pl-2 pr-1">
-                  {versions.map((filename) => {
+                  {versions.map((filename, versionIndex) => {
                     const key = `${group}::${filename}`
                     const isSelected = key === selectedKey
+                    const isLatest = versionIndex === 0
+                    const timestamp = parseBackupTimestamp(filename)
                     return (
                       <div key={filename}>
                         <button
                           onClick={() => selectVersion(group, filename)}
-                          className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left hover:bg-gray-100 ${
+                          title={filename}
+                          className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left hover:bg-gray-100 ${
                             isSelected ? 'bg-accent-soft' : ''
                           }`}
                         >
-                          <span className="truncate font-mono text-[11.5px] text-gray-600">{filename}</span>
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            {isLatest && (
+                              <span className="flex-shrink-0 rounded-full bg-accent-soft px-1.5 py-[1px] font-mono text-[9px] font-bold tracking-wide text-accent">
+                                LATEST
+                              </span>
+                            )}
+                            <span className="truncate font-mono text-[11.5px] text-gray-600">
+                              {timestamp ? formatBackupTimestamp(timestamp) : filename}
+                            </span>
+                          </div>
                           {isSelected && <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-accent" />}
                         </button>
 
