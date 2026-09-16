@@ -21,6 +21,7 @@ from constants import (
     BACKTEST_LOG_PATH,
     BACKTEST_META_PATH,
     BACKTEST_PORTFOLIO_PATH,
+    BACKTEST_TRADES_PATH,
     BENCHMARK_END_DATE,
     BENCHMARK_START_DATE,
     STRATEGY_STATS_PATH,
@@ -145,9 +146,17 @@ def record_stats_if_benchmark():
     if cagr_pct is None:
         return False, "degenerate run"
 
+    num_trades = None
+    try:
+        trades_df = pd.read_csv(BACKTEST_TRADES_PATH)
+        if "Funded" in trades_df.columns:
+            num_trades = int(trades_df["Funded"].sum())
+    except (FileNotFoundError, pd.errors.EmptyDataError):
+        pass
+
     upsert_strategy_stats(
         STRATEGY_STATS_PATH, meta["strategy_name"], cagr_pct, max_dd_pct, composite_score,
-        exit_strategy_name=meta["exit_strategy_name"],
+        exit_strategy_name=meta["exit_strategy_name"], num_trades=num_trades,
     )
     return True, "recorded"
 

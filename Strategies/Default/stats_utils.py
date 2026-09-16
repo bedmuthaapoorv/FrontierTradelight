@@ -1,14 +1,14 @@
 """Persists each strategy's latest backtest stats (CAGR, Max Drawdown,
-Composite Score) across runs, keyed by the strategy's declared name - so
-switching strategies and backtesting each one builds up a running
-leaderboard instead of only ever showing the most recent run."""
+Number of Trades, Composite Score) across runs, keyed by the strategy's
+declared name - so switching strategies and backtesting each one builds up
+a running leaderboard instead of only ever showing the most recent run."""
 
 import os
 from datetime import datetime
 
 import pandas as pd
 
-COLUMNS = ["Strategy Name", "Exit Strategy Name", "CAGR (%/yr)", "Max Drawdown (%)", "Composite Score", "Last Updated"]
+COLUMNS = ["Strategy Name", "Exit Strategy Name", "CAGR (%/yr)", "Max Drawdown (%)", "Number of Trades", "Composite Score", "Last Updated"]
 
 
 def load_strategy_stats(path):
@@ -17,7 +17,7 @@ def load_strategy_stats(path):
     return pd.read_csv(path)
 
 
-def upsert_strategy_stats(path, strategy_name, cagr_pct, max_dd_pct, composite_score, exit_strategy_name=None):
+def upsert_strategy_stats(path, strategy_name, cagr_pct, max_dd_pct, composite_score, exit_strategy_name=None, num_trades=None):
     """Overwrites the row for strategy_name with its latest stats, leaving
     every other strategy's previously saved row untouched. Does nothing if
     strategy_name is blank (rules.md has no declared "Strategy Name").
@@ -38,6 +38,7 @@ def upsert_strategy_stats(path, strategy_name, cagr_pct, max_dd_pct, composite_s
         "Exit Strategy Name": exit_strategy_name or "",
         "CAGR (%/yr)": cagr_pct,
         "Max Drawdown (%)": max_dd_pct,
+        "Number of Trades": num_trades,
         "Composite Score": composite_score,
         "Last Updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }])

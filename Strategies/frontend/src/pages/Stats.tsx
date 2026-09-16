@@ -123,9 +123,9 @@ export default function StatsPage() {
         <div className="flex flex-col gap-2">
           <h1 className="text-[22px] font-extrabold tracking-tight">Stats</h1>
           <p className="max-w-[680px] text-[13.5px] leading-relaxed text-gray-500">
-            The latest CAGR, Max Drawdown, and Composite Score recorded for each strategy backtested over the
-            benchmark range below. Running a benchmark updates only that strategy&apos;s row here &mdash; every other
-            row is left exactly as it was.
+            The latest CAGR, Max Drawdown, Number of Trades, and Composite Score recorded for each strategy
+            backtested over the benchmark range below. Running a benchmark updates only that strategy&apos;s row here
+            &mdash; every other row is left exactly as it was.
           </p>
           {stats && (
             <p className="text-xs text-gray-400">
@@ -219,6 +219,9 @@ export default function StatsPage() {
                         Max Drawdown
                       </th>
                       <th className="px-4 py-2.5 text-right text-[10.5px] font-bold uppercase tracking-wide text-gray-400">
+                        No. of Trades
+                      </th>
+                      <th className="px-4 py-2.5 text-right text-[10.5px] font-bold uppercase tracking-wide text-gray-400">
                         Composite Score
                       </th>
                       <th className="px-4 py-2.5 text-right text-[10.5px] font-bold uppercase tracking-wide text-gray-400">
@@ -249,6 +252,9 @@ export default function StatsPage() {
                           </td>
                           <td className="px-4 py-2.5 text-right font-mono text-xs font-semibold text-red-700">
                             {row.max_dd_pct === null ? 'N/A' : `${row.max_dd_pct.toFixed(1)}%`}
+                          </td>
+                          <td className="px-4 py-2.5 text-right font-mono text-xs font-semibold text-gray-600">
+                            {row.num_trades === null ? 'N/A' : row.num_trades}
                           </td>
                           <td className="px-4 py-2.5 text-right font-mono text-xs font-bold text-accent">
                             {row.composite_score === null ? 'N/A' : row.composite_score.toFixed(2)}

@@ -237,6 +237,7 @@ export interface StatsRow {
   exit_strategy_name: string | null
   cagr_pct: number | null
   max_dd_pct: number | null
+  num_trades: number | null
   composite_score: number | null
   last_updated: string
 }

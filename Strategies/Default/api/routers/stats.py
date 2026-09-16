@@ -58,6 +58,7 @@ def get_stats():
                 "exit_strategy_name": None if pd.isna(row["Exit Strategy Name"]) or not row["Exit Strategy Name"] else row["Exit Strategy Name"],
                 "cagr_pct": None if pd.isna(row["CAGR (%/yr)"]) else float(row["CAGR (%/yr)"]),
                 "max_dd_pct": None if pd.isna(row["Max Drawdown (%)"]) else float(row["Max Drawdown (%)"]),
+                "num_trades": None if "Number of Trades" not in row or pd.isna(row["Number of Trades"]) else int(row["Number of Trades"]),
                 "composite_score": None if pd.isna(row["Composite Score"]) else float(row["Composite Score"]),
                 "last_updated": row["Last Updated"],
             }
