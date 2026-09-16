@@ -21,6 +21,15 @@ Thumbs.db
 .agents/
 .idea/
 
-# Generated data / logs - all runtime output lives in Strategies/Default/data/
-Strategies/Default/data/
+# Generated data / logs - all runtime output lives in Strategies/Default/data/.
+# Most of it is regenerable (backtest caches, screener/sell reports, logs,
+# near-misses, API caches) and stays ignored, but a few files are the ONLY
+# copy of real data with no other source of truth - the Stats tab's
+# leaderboard, the personal Holdings/Sell tab's positions, and the whole
+# Fund Manager ledger (investors, capital events, NAV history, fund
+# holdings, cash, NAV generation marker) - so those are explicitly kept.
+Strategies/Default/data/*
+!Strategies/Default/data/strategy_stats.csv
+!Strategies/Default/data/holdings.csv
+!Strategies/Default/data/fund
 Strategies/universe_cache.json
