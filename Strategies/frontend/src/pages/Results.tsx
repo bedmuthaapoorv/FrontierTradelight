@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { API_BASE_URL } from '../api'
 
 type CellValue = string | number | boolean | null
@@ -14,10 +14,24 @@ function formatCell(value: CellValue): string {
   return String(value)
 }
 
+// Fallback used only until the real viewport measurement below runs once.
+const DEFAULT_PAGE_SIZE = 20
+const ROW_HEIGHT_PX = 37 // matches the rendered <tr>'s py-2.5 + text-xs + border
+const HEADER_HEIGHT_PX = 37
+const PAGINATION_BAR_HEIGHT_PX = 44
+const BOTTOM_MARGIN_PX = 24 // breathing room so the table doesn't touch the page edge
+
 export default function Results() {
   const [data, setData] = useState<ResultsResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [passedOnly, setPassedOnly] = useState(false)
+  const [isScrollable, setIsScrollable] = useState(false)
+  const [canScrollLeft, setCanScrollLeft] = useState(false)
+  const [canScrollRight, setCanScrollRight] = useState(false)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const tableWrapperRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     fetch(`${API_BASE_URL}/results`)
@@ -28,6 +42,58 @@ export default function Results() {
       .then(setData)
       .catch((err) => setError(err.message))
   }, [])
+
+  // The table can be wider than the viewport (16 columns), and important
+  // fields like Ideal Entry Price sit in the middle of that width with no
+  // visual cue that there's more to scroll to - so track scroll position and
+  // show arrow buttons on both edges whenever the table overflows at all,
+  // disabling whichever side there's nothing left to scroll toward (rather
+  // than hiding it, which made the layout jump and hid the affordance
+  // entirely once you'd scrolled all the way to one end).
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+
+    const updateScrollState = () => {
+      setIsScrollable(el.scrollWidth - el.clientWidth > 1)
+      setCanScrollLeft(el.scrollLeft > 4)
+      setCanScrollRight(el.scrollWidth - el.clientWidth - el.scrollLeft > 4)
+    }
+
+    updateScrollState()
+    el.addEventListener('scroll', updateScrollState)
+    const resizeObserver = new ResizeObserver(updateScrollState)
+    resizeObserver.observe(el)
+
+    return () => {
+      el.removeEventListener('scroll', updateScrollState)
+      resizeObserver.disconnect()
+    }
+  }, [data])
+
+  // Size the page to however many rows actually fit below the table's own
+  // position on screen, so a tall monitor shows more rows and a short one
+  // (or a browser window resize) shows fewer - instead of a fixed count
+  // that's either wastefully short or forces page-level vertical scroll,
+  // which is what was hiding the horizontal-scroll arrow hint in the first
+  // place.
+  useEffect(() => {
+    const computePageSize = () => {
+      const wrapper = tableWrapperRef.current
+      const top = wrapper ? wrapper.getBoundingClientRect().top : 0
+      const available = window.innerHeight - top - HEADER_HEIGHT_PX - PAGINATION_BAR_HEIGHT_PX - BOTTOM_MARGIN_PX
+      const rowsThatFit = Math.floor(available / ROW_HEIGHT_PX)
+      setPageSize(Math.max(5, rowsThatFit))
+    }
+
+    computePageSize()
+    window.addEventListener('resize', computePageSize)
+    return () => window.removeEventListener('resize', computePageSize)
+  }, [data])
+
+  useEffect(() => {
+    setPage(1)
+  }, [passedOnly, data])
 
   if (error) {
     return (
@@ -48,6 +114,10 @@ export default function Results() {
   const hasPassedColumn = data.columns.includes('Passed')
   const rows = hasPassedColumn && passedOnly ? data.rows.filter((r) => r.Passed === true) : data.rows
   const passedCount = hasPassedColumn ? data.rows.filter((r) => r.Passed === true).length : 0
+
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize))
+  const currentPage = Math.min(page, totalPages)
+  const pageRows = rows.slice((currentPage - 1) * pageSize, currentPage * pageSize)
 
   return (
     <main className="flex-1 overflow-y-auto px-6 py-10">
@@ -93,16 +163,39 @@ export default function Results() {
               </div>
             </div>
 
-            <div className="overflow-hidden rounded-[14px] border border-gray-200 bg-white shadow-[0_1px_2px_rgba(16,24,40,0.03)]">
-              <div className="overflow-x-auto">
-                <table className="w-full border-collapse" style={{ minWidth: `${Math.max(700, data.columns.length * 130)}px` }}>
+            <div ref={tableWrapperRef} className="flex overflow-hidden rounded-[14px] border border-gray-200 bg-white shadow-[0_1px_2px_rgba(16,24,40,0.03)]">
+              {isScrollable && (
+                <button
+                  onClick={() => scrollRef.current?.scrollBy({ left: -130, behavior: 'smooth' })}
+                  disabled={!canScrollLeft}
+                  aria-label="Scroll table left"
+                  className="mr-2 flex w-10 flex-shrink-0 items-center justify-center bg-accent hover:brightness-95 disabled:cursor-default disabled:bg-gray-300 disabled:hover:brightness-100"
+                >
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#FFFFFF"
+                    strokeWidth="2.75"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <polyline points="15 6 9 12 15 18" />
+                  </svg>
+                </button>
+              )}
+              <div ref={scrollRef} className="min-w-0 flex-1 overflow-x-auto">
+                <table className="w-full border-separate border-spacing-0" style={{ minWidth: `${Math.max(700, data.columns.length * 130)}px` }}>
                   <thead>
-                    <tr className="border-b border-gray-100 bg-[#FAFAFB]">
+                    <tr className="bg-[#FAFAFB]">
                       {data.columns.map((col) => (
                         <th
                           key={col}
-                          className={`sticky top-0 whitespace-nowrap px-3.5 py-2.5 text-[10.5px] font-bold uppercase tracking-wide text-gray-400 ${
-                            col === 'Symbol' ? 'left-0 bg-[#FAFAFB] text-left' : typeof rows[0]?.[col] === 'number' ? 'text-right' : 'text-left'
+                          className={`sticky top-0 whitespace-nowrap border-b border-gray-100 px-3.5 py-2.5 text-[10.5px] font-bold uppercase tracking-wide text-gray-400 ${
+                            col === 'Symbol'
+                              ? 'left-0 z-20 bg-[#FAFAFB] text-left'
+                              : `z-10 bg-[#FAFAFB] ${typeof rows[0]?.[col] === 'number' ? 'text-right' : 'text-left'}`
                           }`}
                         >
                           {col}
@@ -111,12 +204,15 @@ export default function Results() {
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.map((row, i) => (
-                      <tr key={i} className="border-b border-gray-100 hover:bg-[#FAFAFB]">
+                    {pageRows.map((row, i) => (
+                      <tr key={i} className="group">
                         {data.columns.map((col) => {
                           if (col === 'Symbol') {
                             return (
-                              <td key={col} className="sticky left-0 whitespace-nowrap bg-white px-3.5 py-2.5 font-mono text-xs font-bold text-gray-900">
+                              <td
+                                key={col}
+                                className="sticky left-0 z-10 whitespace-nowrap border-b border-gray-100 bg-white px-3.5 py-2.5 font-mono text-xs font-bold text-gray-900 group-hover:bg-[#FAFAFB]"
+                              >
                                 {row[col]}
                               </td>
                             )
@@ -124,7 +220,7 @@ export default function Results() {
                           if (col === 'Passed') {
                             const passed = row[col] === true
                             return (
-                              <td key={col} className="whitespace-nowrap px-3.5 py-2.5">
+                              <td key={col} className="whitespace-nowrap border-b border-gray-100 px-3.5 py-2.5 group-hover:bg-[#FAFAFB]">
                                 <span
                                   className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
                                     passed ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
@@ -141,7 +237,7 @@ export default function Results() {
                               <td
                                 key={col}
                                 title={full}
-                                className="max-w-[260px] overflow-hidden text-ellipsis whitespace-nowrap px-3.5 py-2.5 text-xs text-gray-400"
+                                className="max-w-[260px] overflow-hidden text-ellipsis whitespace-nowrap border-b border-gray-100 px-3.5 py-2.5 text-xs text-gray-400 group-hover:bg-[#FAFAFB]"
                               >
                                 {full || '—'}
                               </td>
@@ -151,7 +247,7 @@ export default function Results() {
                           return (
                             <td
                               key={col}
-                              className={`whitespace-nowrap px-3.5 py-2.5 text-xs text-gray-700 ${
+                              className={`whitespace-nowrap border-b border-gray-100 px-3.5 py-2.5 text-xs text-gray-700 group-hover:bg-[#FAFAFB] ${
                                 isNumeric ? 'text-right font-mono' : ''
                               }`}
                             >
@@ -164,7 +260,56 @@ export default function Results() {
                   </tbody>
                 </table>
               </div>
+
+              {isScrollable && (
+                <button
+                  onClick={() => scrollRef.current?.scrollBy({ left: 130, behavior: 'smooth' })}
+                  disabled={!canScrollRight}
+                  aria-label="Scroll table right"
+                  className="ml-2 flex w-10 flex-shrink-0 items-center justify-center bg-accent hover:brightness-95 disabled:cursor-default disabled:bg-gray-300 disabled:hover:brightness-100"
+                >
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#FFFFFF"
+                    strokeWidth="2.75"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <polyline points="9 6 15 12 9 18" />
+                  </svg>
+                </button>
+              )}
             </div>
+
+            {totalPages > 1 && (
+              <div className="flex items-center justify-between">
+                <div className="font-mono text-[11.5px] text-gray-400">
+                  Showing {(currentPage - 1) * pageSize + 1}-{Math.min(currentPage * pageSize, rows.length)} of {rows.length}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    disabled={currentPage === 1}
+                    className="rounded-[7px] border border-gray-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-700 hover:bg-gray-50 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-white"
+                  >
+                    Prev
+                  </button>
+                  <div className="px-1 font-mono text-[12px] text-gray-500">
+                    Page {currentPage} of {totalPages}
+                  </div>
+                  <button
+                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                    disabled={currentPage === totalPages}
+                    className="rounded-[7px] border border-gray-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-700 hover:bg-gray-50 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-white"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>

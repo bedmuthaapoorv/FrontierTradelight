@@ -22,9 +22,9 @@ import pandas as pd
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from backup_utils import backup_markdown, group_backups, list_backups
+from backup_utils import backup_markdown, group_backups, list_backups, strategy_slug
 from constants import APP_DIR, BACKUP_DIR, BENCHMARK_END_DATE, BENCHMARK_START_DATE, RULES_PATH, STRATEGY_STATS_PATH
-from stats_utils import load_strategy_stats
+from stats_utils import hash_rules_content, load_strategy_stats
 
 router = APIRouter(prefix="/stats")
 
@@ -38,6 +38,70 @@ def _format_option_label(group_key):
     return label.replace("_", " ").title()
 
 
+def _group_key_for_name(strategy_name):
+    """Reuses strategy_slug's exact slugification (lowercase, non-alnum ->
+    _) by feeding it a synthetic "Strategy Name: ..." line, rather than
+    duplicating that regex here - the group key MUST be produced the same
+    way backup_markdown produces it, or badges would silently never
+    match."""
+    return f"{strategy_slug(f'Strategy Name: {strategy_name}')}_rules"
+
+
+def _best_performing_group_key(stats_df):
+    """The rules.md backup group key (see backup_utils.group_backups) for
+    the strategy with the highest recorded Composite Score - so the Rules
+    tab's version drawer can badge whichever saved strategy actually
+    backtested best, not just whichever is currently live. Returns None
+    if there are no scored rows yet."""
+    scored = stats_df.dropna(subset=["Composite Score"])
+    if scored.empty:
+        return None
+    best_name = scored.loc[scored["Composite Score"].idxmax(), "Strategy Name"]
+    return _group_key_for_name(best_name)
+
+
+def _best_scoring_file_by_group(stats_df):
+    """For every strategy name with a recorded score, figures out WHICH
+    specific backup file within that strategy's own version history is
+    the exact content that earned it - not just which strategy NAME
+    scored best, but which dated save.
+
+    Each strategy_stats.csv row now carries a "Rules Content Hash" (see
+    stats_utils.hash_rules_content), captured by backtest.py at the exact
+    moment a benchmark run used that content. This hashes every backup
+    file within the row's own group and looks for a match - a content
+    hash is used rather than string-comparing full file text just to keep
+    this cheap once there are many backups.
+
+    Returns {group_key: filename}. A row is skipped (no entry) if it has
+    no recorded hash (e.g. it predates this tracking) or if none of the
+    group's current backup files match (e.g. that exact save was later
+    deleted, or it's still only the live, never-backed-up rules.md -
+    which the version drawer doesn't list as a file to badge anyway)."""
+    if "Rules Content Hash" not in stats_df.columns:
+        return {}
+    scored = stats_df.dropna(subset=["Composite Score", "Rules Content Hash"])
+    if scored.empty:
+        return {}
+
+    groups = group_backups(list_backups(BACKUP_DIR))
+    result = {}
+    for _, row in scored.iterrows():
+        group_key = _group_key_for_name(row["Strategy Name"])
+        target_hash = row["Rules Content Hash"]
+        for filename in groups.get(group_key, []):
+            backup_path = os.path.join(BACKUP_DIR, filename)
+            try:
+                with open(backup_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+            except OSError:
+                continue
+            if hash_rules_content(content) == target_hash:
+                result[group_key] = filename
+                break
+    return result
+
+
 @router.get("")
 def get_stats():
     stats_df = load_strategy_stats(STRATEGY_STATS_PATH)
@@ -45,13 +109,19 @@ def get_stats():
         return {
             "benchmark_start": BENCHMARK_START_DATE.isoformat(),
             "benchmark_end": BENCHMARK_END_DATE.isoformat(),
+            "best_performing_group_key": None,
+            "best_scoring_file_by_group": {},
             "rows": [],
         }
 
+    best_group_key = _best_performing_group_key(stats_df)
+    best_file_by_group = _best_scoring_file_by_group(stats_df)
     stats_df = stats_df.sort_values(by="Composite Score", ascending=False, na_position="last")
     return {
         "benchmark_start": BENCHMARK_START_DATE.isoformat(),
         "benchmark_end": BENCHMARK_END_DATE.isoformat(),
+        "best_performing_group_key": best_group_key,
+        "best_scoring_file_by_group": best_file_by_group,
         "rows": [
             {
                 "strategy_name": row["Strategy Name"],
