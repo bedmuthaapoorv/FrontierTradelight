@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { makeMarkdownFileApi } from '../api'
+import { makeMarkdownFileApi, statsApi } from '../api'
 import MarkdownEditor from '../components/MarkdownEditor'
 import VersionDrawer from '../components/VersionDrawer'
 
@@ -19,6 +19,8 @@ export default function Rules() {
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(true)
+  const [bestGroupKey, setBestGroupKey] = useState<string | null>(null)
+  const [bestScoringFileByGroup, setBestScoringFileByGroup] = useState<Record<string, string>>({})
 
   useEffect(() => {
     rulesApi
@@ -29,6 +31,10 @@ export default function Rules() {
         setLoaded(true)
       })
       .catch((err) => setError(err.message))
+    statsApi.get().then((res) => {
+      setBestGroupKey(res.best_performing_group_key)
+      setBestScoringFileByGroup(res.best_scoring_file_by_group)
+    })
   }, [])
 
   useEffect(() => {
@@ -151,6 +157,8 @@ export default function Rules() {
           setSavedContent(restoredContent)
         }}
         onMessage={setMessage}
+        bestGroupKey={bestGroupKey}
+        bestScoringFileByGroup={bestScoringFileByGroup}
       />
     </div>
   )

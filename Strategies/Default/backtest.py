@@ -42,6 +42,7 @@ import pandas as pd
 from universe_fetcher import get_top_stocks_by_sector
 from nse_utils import fetch_stock_history, calculate_sector_strength, calculate_market_breadth
 from backup_utils import declared_strategy_name
+from stats_utils import hash_rules_content
 from constants import (
     BACKTEST_CACHE_DIR,
     BACKTEST_META_PATH,
@@ -589,8 +590,10 @@ def main():
     # the strategy that produced them, not to whatever happens to be
     # loaded in rules.md when it's later viewed.
     with open(BACKTEST_META_PATH, "w", encoding="utf-8") as f:
+        rules_content = open(RULES_PATH, encoding="utf-8").read()
         json.dump({
-            "strategy_name": declared_strategy_name(open(RULES_PATH, encoding="utf-8").read()),
+            "strategy_name": declared_strategy_name(rules_content),
+            "rules_content_hash": hash_rules_content(rules_content),
             "exit_strategy_name": declared_strategy_name(
                 open(EXIT_RULES_PATH, encoding="utf-8").read(), name_field="Exit Strategy Name"
             ),

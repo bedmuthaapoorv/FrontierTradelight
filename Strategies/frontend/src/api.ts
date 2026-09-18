@@ -245,6 +245,13 @@ export interface StatsRow {
 export interface Stats {
   benchmark_start: string
   benchmark_end: string
+  best_performing_group_key: string | null
+  /** group_key -> the exact backup filename within that group whose
+   * content produced the recorded Composite Score (see backend's
+   * hash-matching in api/routers/stats.py). A group with no entry here
+   * either predates hash tracking or its scored content no longer
+   * matches any surviving backup file. */
+  best_scoring_file_by_group: Record<string, string>
   rows: StatsRow[]
 }
 

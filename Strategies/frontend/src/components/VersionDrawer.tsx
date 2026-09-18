@@ -10,6 +10,23 @@ interface VersionDrawerProps {
    * addition to the rail itself. */
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** The backup group key (see backup_utils.group_backups) of the
+   * strategy with the highest recorded Composite Score from the Stats
+   * leaderboard - e.g. "trendline_bounce_confirmation_v4_rules". When a
+   * group's key matches, it gets a "BEST PERFORMING" badge on its header.
+   * Omit (or pass null) to show no such badge - only Rules.tsx supplies
+   * this, since Composite Score is keyed by entry strategy name, not
+   * exit strategy. */
+  bestGroupKey?: string | null
+  /** group_key -> the exact backup filename within that group whose
+   * content produced its recorded Composite Score. That specific version
+   * (not just the group as a whole) gets an inline "BEST SCORE" badge
+   * next to its timestamp when the group is expanded - e.g. if
+   * "Trendline Bounce Confirmation" was benchmarked three times across
+   * three different saves, this marks which ONE of those three actually
+   * earned the recorded score, since later edits under the same strategy
+   * name don't necessarily perform the same. */
+  bestScoringFileByGroup?: Record<string, string>
 }
 
 /** Parses the "_YYYYMMDD_HHMMSS" suffix backup_utils.backup_markdown always
@@ -43,7 +60,15 @@ function formatBackupTimestamp(date: Date): string {
  * with every version visible at once (no drill-down) - mirrors
  * ui_helpers.backup_restore_section + manage_backup_file, but laid out as
  * a persistent docked drawer instead of a modal dialog. */
-export default function VersionDrawer({ api, onRestored, onMessage, open, onOpenChange }: VersionDrawerProps) {
+export default function VersionDrawer({
+  api,
+  onRestored,
+  onMessage,
+  open,
+  onOpenChange,
+  bestGroupKey,
+  bestScoringFileByGroup,
+}: VersionDrawerProps) {
   const [groups, setGroups] = useState<Record<string, string[]>>({})
   const [search, setSearch] = useState('')
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({})
@@ -202,6 +227,8 @@ export default function VersionDrawer({ api, onRestored, onMessage, open, onOpen
         {groupKeys.map((group) => {
           const versions = filteredGroups[group]
           const isExpanded = expandedGroups[group] === true
+          const isBestPerforming = bestGroupKey != null && group === bestGroupKey
+          const bestScoringFile = bestScoringFileByGroup?.[group]
           return (
             <div key={group} className="mb-1">
               <button
@@ -209,8 +236,21 @@ export default function VersionDrawer({ api, onRestored, onMessage, open, onOpen
                 className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-left hover:bg-gray-50"
               >
                 <div className="min-w-0">
-                  <div className="truncate text-[12.5px] font-semibold text-gray-900">
-                    {group.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
+                  <div className="flex items-center gap-1.5">
+                    <div className="truncate text-[12.5px] font-semibold text-gray-900">
+                      {group.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
+                    </div>
+                    {isBestPerforming && (
+                      <span
+                        title="Highest Composite Score recorded on the Stats leaderboard"
+                        className="flex flex-shrink-0 items-center gap-1 rounded-full bg-amber-50 px-1.5 py-[1px] font-mono text-[9px] font-bold tracking-wide text-amber-700"
+                      >
+                        <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M12 2l2.9 6.26L21.5 9l-5 4.87L17.8 21 12 17.77 6.2 21l1.3-7.13-5-4.87 6.6-.74L12 2z" />
+                        </svg>
+                        BEST PERFORMING
+                      </span>
+                    )}
                   </div>
                   <div className="text-[10.5px] text-gray-400">{versions.length === 1 ? '1 version' : `${versions.length} versions`}</div>
                 </div>
@@ -236,6 +276,7 @@ export default function VersionDrawer({ api, onRestored, onMessage, open, onOpen
                     const key = `${group}::${filename}`
                     const isSelected = key === selectedKey
                     const isLatest = versionIndex === 0
+                    const isBestScore = filename === bestScoringFile
                     const timestamp = parseBackupTimestamp(filename)
                     return (
                       <div key={filename}>
@@ -250,6 +291,17 @@ export default function VersionDrawer({ api, onRestored, onMessage, open, onOpen
                             {isLatest && (
                               <span className="flex-shrink-0 rounded-full bg-accent-soft px-1.5 py-[1px] font-mono text-[9px] font-bold tracking-wide text-accent">
                                 LATEST
+                              </span>
+                            )}
+                            {isBestScore && (
+                              <span
+                                title="This exact saved version produced the highest recorded Composite Score for this strategy"
+                                className="flex flex-shrink-0 items-center gap-1 rounded-full bg-amber-50 px-1.5 py-[1px] font-mono text-[9px] font-bold tracking-wide text-amber-700"
+                              >
+                                <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor">
+                                  <path d="M12 2l2.9 6.26L21.5 9l-5 4.87L17.8 21 12 17.77 6.2 21l1.3-7.13-5-4.87 6.6-.74L12 2z" />
+                                </svg>
+                                BEST SCORE
                               </span>
                             )}
                             <span className="truncate font-mono text-[11.5px] text-gray-600">

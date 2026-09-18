@@ -2,42 +2,40 @@ import pandas as pd
 import numpy as np
 import pandas_ta as ta
 from scipy.signal import argrelextrema
-from math import ceil
 
 def evaluate_stock(symbol, df, universe, sector_ranks, market_breadth):
-    results = {
-        "Symbol": symbol,
-        "Passed": False,
-        "ClosenessScore": 0.0,
-        "FailedRules": [],
-        "Details": {}
-    }
-
+    failed_rules = []
+    details = {}
+    
     try:
         if len(df) < 60:
-            results["FailedRules"].append("Insufficient data (min 60 days)")
-            return results
+            return {"Symbol": symbol, "Passed": False, "ClosenessScore": 0.0, "FailedRules": ["Insufficient data (< 60 days)"], "Details": {}}
 
-        # Pre-calculations
+        # Data Prep
+        df = df.copy()
         close = df['close']
         low = df['low']
         vol = df['volume']
-        ma20_vol = vol.rolling(20).mean()
+        turnover = vol * close
+        
+        # Indicators
+        ma20_vol = turnover.rolling(20).mean()
         ma100 = close.rolling(100).mean()
         atr14 = ta.atr(df['high'], df['low'], df['close'], length=14)
-        rsi14 = ta.rsi(close, length=14)
+        if atr14 is None: atr14 = pd.Series(0, index=df.index)
+        atr14_val = atr14.iloc[-1]
         
-        curr_atr = atr14.iloc[-1] if not atr14.empty else 0
-        curr_rsi = rsi14.iloc[-1] if isinstance(rsi14, pd.Series) else 0
+        rsi = ta.rsi(close, length=14)
+        rsi_val = rsi.iloc[-1] if rsi is not None else 50
         
         # Rule 1: Liquidity
-        if ma20_vol.iloc[-1] < 100000 or close.iloc[-1] < 50:
-            results["FailedRules"].append("Rule 1: Minimum Liquidity Floor failed")
+        if ma20_vol.iloc[-1] < 50000000 or close.iloc[-1] < 50:
+            failed_rules.append("Liquidity or Price floor not met")
             
         # Rule 2: Uptrend
         if not (close.iloc[-1] > ma100.iloc[-1] and ma100.iloc[-1] > ma100.iloc[-11]):
-            results["FailedRules"].append("Rule 2: Uptrend Context failed")
-
+            failed_rules.append("Uptrend context not met")
+            
         # Rule 3: Trendline
         best_line = None
         max_touches = -1
@@ -45,87 +43,92 @@ def evaluate_stock(symbol, df, universe, sector_ranks, market_breadth):
         for window in [250, 150, 100, 60]:
             if len(df) < window: continue
             subset = df.iloc[-window:].reset_index(drop=True)
-            pivots = argrelextrema(subset['low'].values, np.less, order=4)[0]
+            pivots = argrelextrema(subset['low'].values, np.less_equal, order=4)[0]
             if len(pivots) < 3: continue
             
-            fit_indices = pivots.astype(float)
+            fit_indices = pivots.copy()
             fit_lows = subset['low'].iloc[pivots].values
             
             # Robust refinement
-            for _ in range(ceil(0.1 * len(pivots))):
-                X = np.vstack([fit_indices, np.ones(len(fit_indices))]).T
-                m, c = np.linalg.lstsq(X, fit_lows, rcond=None)[0]
-                residuals = fit_lows - (m * fit_indices + c)
-                if residuals.min() < -1.0 * curr_atr:
-                    idx_to_drop = np.argmin(residuals)
-                    fit_indices = np.delete(fit_indices, idx_to_drop)
-                    fit_lows = np.delete(fit_lows, idx_to_drop)
+            max_drops = int(np.ceil(0.1 * len(pivots)))
+            for _ in range(max_drops):
+                slope, intercept = np.polyfit(fit_indices, fit_lows, 1)
+                residuals = fit_lows - (slope * fit_indices + intercept)
+                worst_idx = np.argmin(residuals)
+                if residuals[worst_idx] < -1.0 * atr14_val:
+                    fit_indices = np.delete(fit_indices, worst_idx)
+                    fit_lows = np.delete(fit_lows, worst_idx)
                 else: break
             
-            if m <= 0: continue
+            if slope <= 0: continue
             
-            touches = sum(1 for i in pivots if abs(subset['low'].iloc[i] - (m * i + c)) <= 1.0 * curr_atr)
-            if touches < 4: continue
+            touches = 0
+            for i in pivots:
+                if abs(subset['low'].iloc[i] - (slope * i + intercept)) <= 1.0 * atr14_val:
+                    touches += 1
             
-            broken = all((subset['close'].iloc[-(3-i)] < (m * (window - 1 - i) + c) - 1.5 * curr_atr) for i in range(3))
-            if broken: continue
-            
-            if touches > max_touches:
-                max_touches = touches
-                best_line = {'m': m, 'c': c, 'touches': touches, 'window': window}
-
+            if touches >= 4:
+                broken = True
+                for i in range(window - 3, window):
+                    if not (subset['close'].iloc[i] < (slope * i + intercept) - 1.5 * atr14_val):
+                        broken = False
+                        break
+                if not broken and touches > max_touches:
+                    max_touches = touches
+                    best_line = (slope, intercept, window)
+        
         if not best_line:
-            results["FailedRules"].append("Rule 3: Ascending Trendline Detection failed")
+            failed_rules.append("No qualifying ascending trendline found")
         else:
-            proj_today = best_line['m'] * (best_line['window'] - 1) + best_line['c']
+            slope, intercept, window = best_line
+            proj_today = slope * (window - 1) + intercept
             
             # Rule 4: Bounce
-            if not (low.iloc[-1] <= proj_today + curr_atr and close.iloc[-1] > close.iloc[-2] and vol.iloc[-1] >= 1.2 * ma20_vol.iloc[-1]):
-                results["FailedRules"].append("Rule 4: Bounce Confirmation failed")
-            
+            vol_ma20 = vol.rolling(20).mean()
+            if not (low.iloc[-1] <= proj_today + atr14_val and close.iloc[-1] > close.iloc[-2] and vol.iloc[-1] >= 1.2 * vol_ma20.iloc[-1]):
+                failed_rules.append("Bounce confirmation failed")
+                
             # Rule 5: RSI
-            if not (35 <= curr_rsi <= 55):
-                results["FailedRules"].append("Rule 5: RSI Pullback Zone failed")
+            if not (35 <= rsi_val <= 55):
+                failed_rules.append(f"RSI outside range ({rsi_val:.1f})")
                 
             # Rule 6: Extension
-            if not (close.iloc[-1] <= 1.15 * close.iloc[-11]):
-                results["FailedRules"].append("Rule 6: Already Extended failed")
-
+            if close.iloc[-1] > 1.15 * close.iloc[-11]:
+                failed_rules.append("Stock already extended")
+                
         # Rule 7 & 8
         rank = sector_ranks.get(symbol, 99)
-        if rank > 10: results["FailedRules"].append("Rule 7: Sector Strength failed")
-        if market_breadth < 45: results["FailedRules"].append("Rule 8: Market Breadth failed")
-
-        # Finalize
-        results["Passed"] = len(results["FailedRules"]) == 0
+        if rank > 10: failed_rules.append(f"Sector rank {rank} not in top 10")
+        if market_breadth < 45: failed_rules.append("Market breadth too low")
         
-        # Details & Score
-        dist_atr = abs(close.iloc[-1] - proj_today) / curr_atr if best_line and curr_atr > 0 else 0
-        results["Details"] = {
+        passed = len(failed_rules) == 0
+        
+        # Scoring
+        score = 0.0
+        if best_line:
+            dist_atr = abs(low.iloc[-1] - proj_today) / atr14_val if atr14_val > 0 else 0
+            score = (min(100, max_touches * 20) * 0.3) + \
+                    (min(100, (vol.iloc[-1] / vol_ma20.iloc[-1]) * 50) * 0.25) + \
+                    (max(0, 100 - (rank - 1) * 10) * 0.2) + \
+                    (max(0, 100 - abs(rsi_val - 45) * 5) * 0.15) + \
+                    (max(0, 100 - (dist_atr * 100)) * 0.1)
+        
+        details = {
             "Company Name": universe.get(symbol, {}).get("Name", "N/A"),
             "Sector": universe.get(symbol, {}).get("Sector", "N/A"),
             "Sector Rank": rank,
             "Current Price": close.iloc[-1],
             "Ideal Entry Price Low": close.iloc[-1],
             "Ideal Entry Price High": close.iloc[-1] * 1.01,
-            "Daily RSI(14)": curr_rsi,
+            "Daily RSI(14)": rsi_val,
             "Volume[-1]": vol.iloc[-1],
-            "20D Average Volume": ma20_vol.iloc[-1],
-            "Trendline Touches": best_line['touches'] if best_line else 0,
-            "Distance From Trendline (ATR units)": dist_atr,
-            "Rank Score": 0.0
+            "20D Average Volume": vol_ma20.iloc[-1],
+            "Trendline Touches": max_touches if best_line else 0,
+            "Distance From Trendline (ATR units)": abs(low.iloc[-1] - proj_today) / atr14_val if best_line and atr14_val > 0 else 0,
+            "Rank Score": score
         }
         
-        if results["Passed"]:
-            s1 = min(100, best_line['touches'] * 20)
-            s2 = min(100, (vol.iloc[-1] / ma20_vol.iloc[-1]) * 50)
-            s3 = max(0, 100 - (rank - 1) * 10)
-            s4 = max(0, 100 - abs(curr_rsi - 45) * 5)
-            s5 = max(0, 100 - (dist_atr * 100))
-            results["ClosenessScore"] = 0.3*s1 + 0.25*s2 + 0.2*s3 + 0.15*s4 + 0.1*s5
-            results["Details"]["Rank Score"] = results["ClosenessScore"]
-
-    except Exception as e:
-        results["FailedRules"].append(f"Calculation error: {str(e)}")
+        return {"Symbol": symbol, "Passed": passed, "ClosenessScore": score, "FailedRules": failed_rules, "Details": details}
         
-    return results
+    except Exception as e:
+        return {"Symbol": symbol, "Passed": False, "ClosenessScore": 0.0, "FailedRules": [f"Calculation error: {e}"], "Details": {}}

@@ -2,7 +2,7 @@
 
 ## Strategy Metadata
 
-Strategy Name: Trendline Bounce Confirmation v4
+Strategy Name: Mean Reversion Strategy 30Days L1
 Market: India (NSE/BSE)
 Timeframe: Daily
 Holding Period: Swing Trade (5-40 Days)
@@ -79,6 +79,18 @@ Replaced with a turnover floor (MA(Volume * Close, 20), i.e. average daily
 traded value in Rupees) - see Rule 1 for the actual number and how it was
 derived from this project's cached universe data, not assumed. No other
 rule changed from v3.
+
+v5 is a rename only, no rule changed from v4. "Trendline Bounce
+Confirmation" described the entry's mechanism (find a trendline, confirm
+a bounce off it) but not its underlying character: Rule 5's RSI 35-55
+band, Rule 6's cap on chasing a bounce that's already run, and the
+matching exit strategy's fixed target at the prior swing high are all
+mean-reversion patterns, not trend-continuation ones - the entry only
+takes this mean-reversion-style bounce when Rule 2's uptrend context is
+already confirmed, so this is a trend-following pullback strategy using
+a mean-reversion trigger, not unconditional/countertrend mean reversion.
+"Mean Reversion Strategy" names it by that character instead of by
+mechanism.
 
 ---
 

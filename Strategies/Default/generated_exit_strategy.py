@@ -3,8 +3,6 @@ import pandas_ta as ta
 
 def get_atr(df, length=14):
     try:
-        if len(df) < length:
-            return None
         atr_series = ta.atr(df['high'], df['low'], df['close'], length=length)
         return atr_series.iloc[-1]
     except:
@@ -12,7 +10,7 @@ def get_atr(df, length=14):
 
 def resolve_exit(entry_price, entry_date, signal_history_df, future_df):
     try:
-        atr_entry = get_atr(signal_history_df, 14)
+        atr_entry = get_atr(signal_history_df, length=14)
         if atr_entry is None:
             return None
 
@@ -23,19 +21,26 @@ def resolve_exit(entry_price, entry_date, signal_history_df, future_df):
             close = row['close']
             days_held = i + 1
             
+            # Daily Update Logic
             if close > highest_close:
                 highest_close = close
             
-            history_up_to_today = pd.concat([signal_history_df, future_df.iloc[:i+1]])
-            atr_today = get_atr(history_up_to_today, 14)
+            # Recompute ATR for trailing stop
+            # Use history up to current day
+            current_history = pd.concat([signal_history_df, future_df.iloc[:i+1]])
+            atr_today = get_atr(current_history, length=14)
             
             if atr_today is not None:
                 candidate_sl = highest_close - (2.5 * atr_today)
                 if candidate_sl > trailing_sl:
                     trailing_sl = candidate_sl
             
+            # Exit Conditions
             if close <= trailing_sl:
                 return {"ExitDate": date, "ExitPrice": close, "ExitReason": "TSL"}
+            
+            if days_held >= 30 and close < entry_price:
+                return {"ExitDate": date, "ExitPrice": close, "ExitReason": "EarlyFailure"}
             
             if days_held >= 90:
                 return {"ExitDate": date, "ExitPrice": close, "ExitReason": "MaxHold"}
@@ -46,7 +51,7 @@ def resolve_exit(entry_price, entry_date, signal_history_df, future_df):
 
 def describe_state(entry_price, entry_date, signal_history_df, future_df):
     try:
-        atr_entry = get_atr(signal_history_df, 14)
+        atr_entry = get_atr(signal_history_df, length=14)
         if atr_entry is None:
             return None
 
@@ -58,9 +63,8 @@ def describe_state(entry_price, entry_date, signal_history_df, future_df):
             if close > highest_close:
                 highest_close = close
             
-            history_up_to_today = pd.concat([signal_history_df, future_df.iloc[:i+1]])
-            atr_today = get_atr(history_up_to_today, 14)
-            
+            current_history = pd.concat([signal_history_df, future_df.iloc[:i+1]])
+            atr_today = get_atr(current_history, length=14)
             if atr_today is not None:
                 candidate_sl = highest_close - (2.5 * atr_today)
                 if candidate_sl > trailing_sl:
@@ -70,12 +74,13 @@ def describe_state(entry_price, entry_date, signal_history_df, future_df):
         days_held = len(future_df)
         
         return {
-            "TrailingStop": float(trailing_sl),
-            "HighestClose": float(highest_close),
-            "LastClose": float(last_close),
-            "DistanceToStopPct": float(((last_close - trailing_sl) / last_close) * 100),
-            "DaysHeld": int(days_held),
-            "DaysToMaxHold": int(max(0, 90 - days_held))
+            "TrailingStop": trailing_sl,
+            "HighestClose": highest_close,
+            "LastClose": last_close,
+            "DistanceToStopPct": ((last_close - trailing_sl) / last_close * 100),
+            "DaysHeld": days_held,
+            "DaysToMaxHold": max(0, 90 - days_held),
+            "AtRiskOfEarlyFailure": (days_held >= 25 and last_close < entry_price)
         }
     except:
         return None

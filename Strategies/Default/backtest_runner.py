@@ -60,7 +60,7 @@ def read_backtest_meta():
     date inputs now, since any of those can change after the fact without
     a new backtest being run. All values None if unavailable (e.g. a
     portfolio.csv from before this tracking existed)."""
-    empty = {"strategy_name": None, "exit_strategy_name": None, "start_date": None, "end_date": None}
+    empty = {"strategy_name": None, "rules_content_hash": None, "exit_strategy_name": None, "start_date": None, "end_date": None}
     if not os.path.exists(BACKTEST_META_PATH):
         return empty
     try:
@@ -70,6 +70,7 @@ def read_backtest_meta():
         return empty
     return {
         "strategy_name": meta.get("strategy_name") or None,
+        "rules_content_hash": meta.get("rules_content_hash") or None,
         "exit_strategy_name": meta.get("exit_strategy_name") or None,
         "start_date": meta.get("start_date") or None,
         "end_date": meta.get("end_date") or None,
@@ -157,6 +158,7 @@ def record_stats_if_benchmark():
     upsert_strategy_stats(
         STRATEGY_STATS_PATH, meta["strategy_name"], cagr_pct, max_dd_pct, composite_score,
         exit_strategy_name=meta["exit_strategy_name"], num_trades=num_trades,
+        rules_content_hash=meta["rules_content_hash"],
     )
     return True, "recorded"
 
