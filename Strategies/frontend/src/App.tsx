@@ -10,6 +10,7 @@ import DeepDive from './pages/DeepDive'
 import MissedOpportunities from './pages/MissedOpportunities'
 import Stats from './pages/Stats'
 import FundManager from './pages/FundManager'
+import EventWatcher from './pages/EventWatcher'
 
 const API_BASE_URL = 'http://localhost:8000'
 
@@ -22,6 +23,7 @@ const TABS = [
   { path: '/deep-dive', label: 'Deep Dive' },
   { path: '/missed-opportunities', label: 'Missed Opportunities' },
   { path: '/stats', label: 'Stats' },
+  { path: '/event-watcher', label: 'Event Watcher' },
 ]
 
 function NavBar() {
@@ -125,6 +127,7 @@ function AppShell() {
         <Route path="/deep-dive" element={<DeepDive />} />
         <Route path="/missed-opportunities" element={<MissedOpportunities />} />
         <Route path="/stats" element={<Stats />} />
+        <Route path="/event-watcher" element={<EventWatcher />} />
         <Route path="*" element={<Rules />} />
       </Routes>
     </div>

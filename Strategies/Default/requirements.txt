@@ -8,3 +8,5 @@ google-genai
 streamlit
 fastapi
 uvicorn[standard]
+feedparser
+requests

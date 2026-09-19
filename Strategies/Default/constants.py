@@ -54,3 +54,14 @@ FUND_NAV_HISTORY_PATH = os.path.join(FUND_DATA_DIR, "nav_history.csv")
 FUND_HOLDINGS_PATH = os.path.join(FUND_DATA_DIR, "fund_holdings.csv")
 FUND_CASH_PATH = os.path.join(FUND_DATA_DIR, "cash.json")
 FUND_GENERATION_PATH = os.path.join(FUND_DATA_DIR, "generation.json")
+
+# Event Watcher - scans PIB (Press Information Bureau) press releases for
+# naval commissioning/induction announcements and flags the listed
+# shipbuilders they name (see event_watcher_utils.py). Entirely a news
+# signal, unrelated to the OHLCV-based rules.md screener - it never feeds
+# the backtester, only surfaces manual candidates in its own tab.
+EVENT_WATCHER_DIR = os.path.join(DATA_DIR, "event_watcher")
+os.makedirs(EVENT_WATCHER_DIR, exist_ok=True)
+EVENT_WATCHER_EVENTS_PATH = os.path.join(EVENT_WATCHER_DIR, "events.csv")
+EVENT_WATCHER_META_PATH = os.path.join(EVENT_WATCHER_DIR, "meta.json")
+EVENT_WATCHER_KEYWORDS_PATH = os.path.join(EVENT_WATCHER_DIR, "keywords.json")

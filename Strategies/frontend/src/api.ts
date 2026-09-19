@@ -356,3 +356,70 @@ export const fundManagerApi = {
       method: 'DELETE',
     }),
 }
+
+export interface EventWatcherRow {
+  Date: string
+  Title: string
+  Link: string
+  MatchedKeyword: string
+  MatchedSymbols: string
+  Source: 'LIVE' | 'HISTORICAL'
+}
+
+export interface EventWatcherState {
+  last_checked: string | null
+  last_error: string | null
+  watchlist: Record<string, string>
+  events: EventWatcherRow[]
+}
+
+/** Client for api/routers/event_watcher.py - scans PIB press releases for
+ * naval commissioning/induction announcements naming a watchlisted
+ * shipbuilder. Pure news signal, separate from the backtest engine. */
+export const eventWatcherApi = {
+  get: () => request<EventWatcherState>('/event-watcher'),
+  refresh: () =>
+    request<{ status: string; new_matches?: number; scanned?: number; message?: string }>(
+      '/event-watcher/refresh',
+      { method: 'POST' },
+    ),
+  fetchHistorical: (isoDate: string) =>
+    request<{
+      status: string
+      date?: string
+      defence_releases_that_day?: number
+      new_matches?: number
+      message?: string
+    }>('/event-watcher/historical', { method: 'POST', body: JSON.stringify({ date: isoDate }) }),
+  clearHistorical: () =>
+    request<{ status: string; removed: number }>('/event-watcher/historical', { method: 'DELETE' }),
+}
+
+export interface WatchlistGroup {
+  symbol: string
+  names: string[]
+}
+
+export interface VesselClassAlias {
+  phrase: string
+  symbol: string
+}
+
+export interface KeywordConfig {
+  event_keywords: string[]
+  watchlist: WatchlistGroup[]
+  vessel_class_aliases: VesselClassAlias[]
+}
+
+/** Client for the Event Watcher's keyword editor (api/routers/event_watcher.py
+ * get_keywords/put_keywords, backed by event_watcher_utils.py's
+ * get_keyword_config/set_keyword_config) - the matching config the tab's
+ * "Edit keywords" drawer reads and writes. */
+export const eventWatcherKeywordsApi = {
+  get: () => request<KeywordConfig>('/event-watcher/keywords'),
+  save: (config: KeywordConfig) =>
+    request<KeywordConfig & { status: string; message?: string }>('/event-watcher/keywords', {
+      method: 'PUT',
+      body: JSON.stringify(config),
+    }),
+}

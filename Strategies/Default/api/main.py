@@ -22,6 +22,7 @@ from api.routers.jobs import router as jobs_router
 from api.routers.markdown_files import make_markdown_router
 from api.routers.missed_opportunities import router as missed_opportunities_router
 from api.routers.fund_manager import router as fund_manager_router
+from api.routers.event_watcher import router as event_watcher_router
 from api.routers.results import make_report_router
 from api.routers.stats import router as stats_router
 from constants import (
@@ -57,6 +58,7 @@ app.include_router(backtest_router)
 app.include_router(missed_opportunities_router)
 app.include_router(stats_router)
 app.include_router(fund_manager_router)
+app.include_router(event_watcher_router)
 
 # Vite picks the next free port (5173, 5174, ...) if 5173 is already
 # taken, e.g. by another dev instance - match any localhost port instead
