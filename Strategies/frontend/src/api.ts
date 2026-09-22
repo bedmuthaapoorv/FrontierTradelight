@@ -355,6 +355,35 @@ export const fundManagerApi = {
     request<{ status: string; message?: string }>(`/fund-manager/capital-events/${rowIndex}`, {
       method: 'DELETE',
     }),
+  listDocuments: () =>
+    request<{ documents: FundDocumentRow[]; categories: string[] }>('/fund-manager/documents'),
+  uploadDocument: async (file: File, category: string, date: string, notes: string) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('category', category)
+    formData.append('date', date)
+    formData.append('notes', notes)
+    const res = await fetch(`${API_BASE_URL}/fund-manager/documents`, { method: 'POST', body: formData })
+    if (!res.ok) {
+      const detail = await res.json().catch(() => null)
+      throw new Error(detail?.detail ?? `Upload failed with ${res.status}`)
+    }
+    return res.json() as Promise<{ status: string; message?: string; document?: FundDocumentRow }>
+  },
+  downloadDocumentUrl: (docId: string) => `${API_BASE_URL}/fund-manager/documents/${encodeURIComponent(docId)}/download`,
+  removeDocument: (docId: string) =>
+    request<{ status: string; message?: string }>(`/fund-manager/documents/${encodeURIComponent(docId)}`, {
+      method: 'DELETE',
+    }),
+}
+
+export interface FundDocumentRow {
+  id: string
+  name: string
+  category: string
+  date: string
+  size_bytes: number
+  notes: string
 }
 
 export interface EventWatcherRow {

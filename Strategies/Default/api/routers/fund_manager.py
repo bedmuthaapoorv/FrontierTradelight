@@ -8,9 +8,11 @@ untouched and unrelated to any of this.
 import os
 
 import pandas as pd
-from fastapi import APIRouter
+from fastapi import APIRouter, File, Form, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+import fund_documents_utils as fd
 import fund_manager_utils as fm
 from constants import FUND_HOLDINGS_PATH
 
@@ -122,3 +124,36 @@ def put_fund_holdings(body: FundHoldingsPayload):
     df.to_csv(FUND_HOLDINGS_PATH, index=False)
     fm.save_cash(body.cash)
     return {"status": "saved", "count": len(df)}
+
+
+# --- Fund documents: agreements/statements/compliance/tax paperwork the user
+# uploads for the fund. Pure file storage - see fund_documents_utils.py.
+
+@router.get("/documents")
+def get_documents():
+    return {"documents": fd.list_documents(), "categories": fd.CATEGORIES}
+
+
+@router.post("/documents")
+async def upload_document(
+    file: UploadFile = File(...),
+    category: str = Form(...),
+    date: str = Form(...),
+    notes: str = Form(""),
+):
+    file_bytes = await file.read()
+    return fd.add_document(file_bytes, file.filename or "", category, date, notes)
+
+
+@router.get("/documents/{doc_id}/download")
+def download_document(doc_id: str):
+    result = fd.get_document_file(doc_id)
+    if result is None:
+        return {"status": "error", "message": "Document not found."}
+    path, original_name = result
+    return FileResponse(path, filename=original_name)
+
+
+@router.delete("/documents/{doc_id}")
+def delete_document(doc_id: str):
+    return fd.remove_document(doc_id)

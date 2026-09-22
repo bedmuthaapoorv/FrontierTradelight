@@ -55,6 +55,15 @@ FUND_HOLDINGS_PATH = os.path.join(FUND_DATA_DIR, "fund_holdings.csv")
 FUND_CASH_PATH = os.path.join(FUND_DATA_DIR, "cash.json")
 FUND_GENERATION_PATH = os.path.join(FUND_DATA_DIR, "generation.json")
 
+# Fund documents - agreements/statements/compliance/tax paperwork the user
+# uploads for the fund, distinct from any strategy or backtest file. Actual
+# files live under FUND_DOCUMENTS_DIR named by their own doc id (never the
+# original filename, to avoid path-traversal/collision issues); metadata
+# (original name, category, date, notes) lives in the CSV alongside them.
+FUND_DOCUMENTS_DIR = os.path.join(FUND_DATA_DIR, "documents")
+os.makedirs(FUND_DOCUMENTS_DIR, exist_ok=True)
+FUND_DOCUMENTS_META_PATH = os.path.join(FUND_DATA_DIR, "documents_meta.csv")
+
 # Event Watcher - scans PIB (Press Information Bureau) press releases for
 # naval commissioning/induction announcements and flags the listed
 # shipbuilders they name (see event_watcher_utils.py). Entirely a news

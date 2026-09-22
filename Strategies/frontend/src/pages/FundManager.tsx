@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { fundManagerApi, type FundHoldingRow, type FundOverview } from '../api'
+import { fundManagerApi, type FundDocumentRow, type FundHoldingRow, type FundOverview } from '../api'
 
 function formatMoney(n: number) {
   return `Rs.${n.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`
@@ -9,6 +9,37 @@ function formatMoney(n: number) {
 function formatPct(n: number | null) {
   if (n === null) return 'N/A'
   return `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`
+}
+
+function formatSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+const CATEGORY_COLORS: Record<string, { bg: string; text: string }> = {
+  Agreement: { bg: '#EAF0EB', text: '#3D5944' },
+  Statement: { bg: '#DBEAFE', text: '#1D4ED8' },
+  Compliance: { bg: '#FEF3C7', text: '#92400E' },
+  Tax: { bg: '#F3E8FF', text: '#7E22CE' },
+  Other: { bg: '#F3F4F6', text: '#6B7280' },
+}
+
+const EXT_BADGE: Record<string, { bg: string; text: string; label: string }> = {
+  pdf: { bg: '#FEE2E2', text: '#B91C1C', label: 'PDF' },
+  doc: { bg: '#DBEAFE', text: '#1D4ED8', label: 'DOC' },
+  docx: { bg: '#DBEAFE', text: '#1D4ED8', label: 'DOC' },
+  xls: { bg: '#DCFCE7', text: '#15803D', label: 'XLS' },
+  xlsx: { bg: '#DCFCE7', text: '#15803D', label: 'XLS' },
+  csv: { bg: '#DCFCE7', text: '#15803D', label: 'CSV' },
+  png: { bg: '#F3E8FF', text: '#7E22CE', label: 'IMG' },
+  jpg: { bg: '#F3E8FF', text: '#7E22CE', label: 'IMG' },
+  jpeg: { bg: '#F3E8FF', text: '#7E22CE', label: 'IMG' },
+}
+
+function extBadge(name: string) {
+  const ext = name.split('.').pop()?.toLowerCase() ?? ''
+  return EXT_BADGE[ext] ?? { bg: '#F3F4F6', text: '#6B7280', label: ext.slice(0, 3).toUpperCase() || 'FILE' }
 }
 
 /** Composes a Gmail compose-in-browser URL with a portfolio update for one
@@ -727,8 +758,291 @@ function HoldingsTab({ onSaved }: { onSaved: () => void }) {
   )
 }
 
+function AddDocumentForm({ categories, onAdded, onCancel }: { categories: string[]; onAdded: () => void; onCancel: () => void }) {
+  const [file, setFile] = useState<File | null>(null)
+  const [category, setCategory] = useState(categories[0] ?? 'Other')
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
+  const [notes, setNotes] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const handleSubmit = () => {
+    if (!file) {
+      setError('Choose a file to upload.')
+      return
+    }
+    setSaving(true)
+    setError(null)
+    fundManagerApi
+      .uploadDocument(file, category, date, notes)
+      .then((res) => {
+        if (res.status === 'ok') {
+          onAdded()
+        } else {
+          setError(res.message ?? 'Failed to upload document.')
+        }
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setSaving(false))
+  }
+
+  return (
+    <div className="overflow-hidden rounded-[14px] border border-gray-200 bg-white shadow-[0_1px_2px_rgba(16,24,40,0.03)]">
+      <div className="border-b border-gray-100 px-5 py-3.5 text-[13.5px] font-bold">New document</div>
+      <div className="flex flex-col gap-3 bg-[#FAFAFB] px-5 py-4">
+        <label className="flex flex-col items-center justify-center gap-2 rounded-xl border-[1.5px] border-dashed border-gray-300 bg-white px-6 py-6 text-center cursor-pointer hover:border-accent">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#9CA3AF" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="17 8 12 3 7 8" />
+            <line x1="12" y1="3" x2="12" y2="15" />
+          </svg>
+          <span className="text-[12.5px] font-semibold text-gray-700">
+            {file ? file.name : 'Drop a file here, or click to browse'}
+          </span>
+          <span className="text-[11px] text-gray-400">PDF, DOCX, XLSX, image or CSV up to 25 MB</span>
+          <input
+            type="file"
+            className="hidden"
+            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.png,.jpg,.jpeg"
+          />
+        </label>
+
+        <div className="grid grid-cols-2 gap-2.5">
+          <div className="flex flex-col gap-1">
+            <label className="text-[10.5px] font-bold uppercase tracking-wide text-gray-400">Category</label>
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium"
+            >
+              {categories.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10.5px] font-bold uppercase tracking-wide text-gray-400">Date</label>
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 font-mono text-xs"
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label className="text-[10.5px] font-bold uppercase tracking-wide text-gray-400">Notes (optional)</label>
+          <input
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="e.g. Shared with investors on the September update email"
+            className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs"
+          />
+        </div>
+
+        {error && <p className="text-xs text-red-600">{error}</p>}
+
+        <div className="flex items-center gap-2 pt-1">
+          <button
+            onClick={handleSubmit}
+            disabled={saving}
+            className="rounded-[9px] bg-accent px-4 py-2 text-xs font-semibold text-white hover:brightness-95 disabled:bg-gray-300"
+          >
+            {saving ? 'Uploading...' : 'Save document'}
+          </button>
+          <button onClick={onCancel} className="rounded-lg px-3 py-2 text-xs font-semibold text-gray-500 hover:text-gray-700">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DocumentsTab() {
+  const [documents, setDocuments] = useState<FundDocumentRow[]>([])
+  const [categories, setCategories] = useState<string[]>([])
+  const [loading, setLoading] = useState(true)
+  const [adding, setAdding] = useState(false)
+  const [activeCategory, setActiveCategory] = useState<string>('All')
+  const [search, setSearch] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  const load = () => {
+    fundManagerApi
+      .listDocuments()
+      .then((res) => {
+        setDocuments(res.documents)
+        setCategories(res.categories)
+        setLoading(false)
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+  }
+
+  useEffect(load, [])
+
+  const onRemove = (docId: string) => {
+    fundManagerApi.removeDocument(docId).then((res) => {
+      if (res.status === 'ok') {
+        load()
+      } else {
+        setError(res.message ?? 'Failed to remove document.')
+      }
+    })
+  }
+
+  const filtered = useMemo(() => {
+    return documents.filter((d) => {
+      if (activeCategory !== 'All' && d.category !== activeCategory) return false
+      if (search.trim() && !d.name.toLowerCase().includes(search.trim().toLowerCase())) return false
+      return true
+    })
+  }, [documents, activeCategory, search])
+
+  if (loading) return <p className="text-sm text-gray-500">Loading...</p>
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="text-[15px] font-extrabold">Fund documents</div>
+          <p className="mt-[3px] max-w-[620px] text-[12.5px] leading-relaxed text-gray-500">
+            Every fund-related paper you create &mdash; agreements, statements, compliance filings, tax records
+            &mdash; kept in one place, separate from the personal Holdings tab. Files live here, not in strategy
+            backups.
+          </p>
+        </div>
+        {!adding && (
+          <button
+            onClick={() => setAdding(true)}
+            className="flex-shrink-0 rounded-[9px] bg-accent px-4 py-2.5 text-[12.5px] font-semibold text-white hover:brightness-95"
+          >
+            + New document
+          </button>
+        )}
+      </div>
+
+      {error && <p className="text-xs text-red-600">{error}</p>}
+
+      {adding && (
+        <AddDocumentForm
+          categories={categories}
+          onCancel={() => setAdding(false)}
+          onAdded={() => {
+            setAdding(false)
+            load()
+          }}
+        />
+      )}
+
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            onClick={() => setActiveCategory('All')}
+            className={`rounded-full px-3 py-1.5 text-[11.5px] font-bold ${
+              activeCategory === 'All' ? 'bg-accent-soft text-accent' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+            }`}
+          >
+            All ({documents.length})
+          </button>
+          {categories.map((c) => (
+            <button
+              key={c}
+              onClick={() => setActiveCategory(c)}
+              className={`rounded-full px-3 py-1.5 text-[11.5px] font-semibold ${
+                activeCategory === c ? 'bg-accent-soft text-accent' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+              }`}
+            >
+              {c}
+            </button>
+          ))}
+        </div>
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search documents..."
+          className="w-56 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-[11.5px] text-gray-700"
+        />
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="rounded-[14px] border border-gray-200 bg-white p-10 text-center text-[13px] text-gray-400">
+          {documents.length === 0 ? 'No documents yet. Click "+ New document" to upload one.' : 'No documents match this filter.'}
+        </div>
+      ) : (
+        <div className="overflow-hidden rounded-[14px] border border-gray-200 bg-white shadow-[0_1px_2px_rgba(16,24,40,0.03)]">
+          <table className="w-full border-collapse">
+            <thead>
+              <tr className="border-b border-gray-100 bg-[#FAFAFB]">
+                <th className="px-4 py-2.5 text-left text-[10.5px] font-bold uppercase tracking-wide text-gray-400">Document</th>
+                <th className="px-4 py-2.5 text-left text-[10.5px] font-bold uppercase tracking-wide text-gray-400">Category</th>
+                <th className="px-4 py-2.5 text-left text-[10.5px] font-bold uppercase tracking-wide text-gray-400">Date</th>
+                <th className="px-4 py-2.5 text-right text-[10.5px] font-bold uppercase tracking-wide text-gray-400">Size</th>
+                <th className="px-4 py-2.5"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((doc) => {
+                const badge = extBadge(doc.name)
+                const cat = CATEGORY_COLORS[doc.category] ?? CATEGORY_COLORS.Other
+                return (
+                  <tr key={doc.id} className="border-b border-gray-100 last:border-b-0">
+                    <td className="px-4 py-2.5">
+                      <div className="flex items-center gap-2.5">
+                        <span
+                          className="flex h-[26px] w-[26px] flex-shrink-0 items-center justify-center rounded-[7px] font-mono text-[9px] font-extrabold"
+                          style={{ background: badge.bg, color: badge.text }}
+                        >
+                          {badge.label}
+                        </span>
+                        <span className="truncate text-[12.5px] font-semibold text-gray-900" title={doc.name}>
+                          {doc.name}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <span
+                        className="rounded-full px-2 py-0.5 text-[10.5px] font-bold"
+                        style={{ background: cat.bg, color: cat.text }}
+                      >
+                        {doc.category}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-[11px] text-gray-500">{doc.date}</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-[11px] text-gray-500">{formatSize(doc.size_bytes)}</td>
+                    <td className="px-4 py-2.5">
+                      <div className="flex items-center justify-end gap-3.5">
+                        <a
+                          href={fundManagerApi.downloadDocumentUrl(doc.id)}
+                          className="text-[11.5px] font-semibold text-accent no-underline hover:text-accent-hover"
+                        >
+                          Download
+                        </a>
+                        <button
+                          onClick={() => onRemove(doc.id)}
+                          className="text-[11.5px] font-semibold text-gray-400 hover:text-red-600"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function FundManager() {
-  const [tab, setTab] = useState<'overview' | 'holdings'>('overview')
+  const [tab, setTab] = useState<'overview' | 'holdings' | 'documents'>('overview')
   const [data, setData] = useState<FundOverview | null>(null)
 
   const loadOverview = () => fundManagerApi.overview().then(setData)
@@ -784,6 +1098,13 @@ export default function FundManager() {
           Holdings
           {tab === 'holdings' && <span className="absolute inset-x-3.5 -bottom-px h-0.5 rounded-t bg-accent" />}
         </button>
+        <button
+          onClick={() => setTab('documents')}
+          className={`relative px-3.5 py-[11px] text-[13px] font-semibold ${tab === 'documents' ? 'text-gray-900' : 'text-gray-400 hover:text-gray-700'}`}
+        >
+          Documents
+          {tab === 'documents' && <span className="absolute inset-x-3.5 -bottom-px h-0.5 rounded-t bg-accent" />}
+        </button>
       </div>
 
       <main className="flex-1 overflow-y-auto px-7 py-8">
@@ -791,6 +1112,7 @@ export default function FundManager() {
           {tab === 'overview' &&
             (data ? <OverviewTab data={data} onNavCalculated={loadOverview} /> : <p className="text-sm text-gray-500">Loading...</p>)}
           {tab === 'holdings' && <HoldingsTab onSaved={loadOverview} />}
+          {tab === 'documents' && <DocumentsTab />}
         </div>
       </main>
     </div>
