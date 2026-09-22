@@ -36,7 +36,13 @@ import feedparser
 import pandas as pd
 import requests
 
-from constants import EVENT_WATCHER_EVENTS_PATH, EVENT_WATCHER_KEYWORDS_PATH, EVENT_WATCHER_META_PATH
+from constants import (
+    EVENT_WATCHER_EVENTS_PATH,
+    EVENT_WATCHER_KEYWORDS_PATH,
+    EVENT_WATCHER_META_PATH,
+    EVENT_WATCHER_SCANNED_PATH,
+)
+from nse_utils import fetch_stock_history
 
 # Unofficial, community-maintained PIB scrape - see module docstring for why
 # PIB's own RSS isn't usable. Updated hourly.
@@ -118,6 +124,79 @@ DEFAULT_EVENT_KEYWORDS = [
 ]
 
 COLUMNS = ["Date", "Title", "Link", "MatchedKeyword", "MatchedSymbols", "Source"]
+
+# Reference point for the BUY/HOLD/SELL heuristic below: Cochin Shipyard's
+# entire post-commissioning rally (23 Jul-26 Aug 2026) was ~11% - the one
+# real case this watcher is modeled on. Not a backtested threshold (this
+# watcher never feeds the backtester, see module docstring), just a rough
+# "has a comparable move already happened" read.
+SIGNAL_RALLY_ALREADY_PLAYED_OUT_PCT = 10.0
+SIGNAL_CACHE_TTL = timedelta(hours=6)
+
+# In-memory only - a stale cached signal just means the tab shows a slightly
+# outdated read until it expires or the process restarts, never wrong data
+# written anywhere.
+_signal_cache: dict[str, tuple[datetime, str]] = {}
+
+
+def _price_signal(symbols: list[str], event_date_str: str) -> str:
+    """BUY/HOLD/SELL for a matched announcement, based on how far the first
+    matched symbol has already moved since the event date.
+
+    BUY  - up since the event, but by less than a Cochin-Shipyard-sized
+           rally - the move may still have room to run.
+    HOLD - flat or down since the event - the catalyst hasn't (yet) shown up
+           in price, or price data couldn't be read cleanly.
+    SELL - already up more than that reference rally - a historically
+           comparable move has likely already played out.
+
+    This is a heuristic for a manual candidate list, not a validated rule -
+    unlike rules.md/exit_rules.md, it has never been backtested."""
+    if not symbols:
+        return "N/A"
+    symbol = symbols[0]
+    cache_key = f"{symbol}:{event_date_str}"
+    cached = _signal_cache.get(cache_key)
+    if cached and datetime.now(timezone.utc) - cached[0] < SIGNAL_CACHE_TTL:
+        return cached[1]
+
+    signal = "N/A"
+    try:
+        event_ts = pd.to_datetime(event_date_str, utc=True, errors="coerce")
+        if pd.isna(event_ts):
+            return signal
+        event_date = event_ts.date()
+        to_date = date.today()
+        if event_date <= to_date:
+            # Widen a week before the event so a non-trading event date
+            # (e.g. a Saturday PIB release) still lands on the last real
+            # close at/before it, instead of finding zero rows there.
+            df = fetch_stock_history(
+                symbol=symbol, from_date=event_date - timedelta(days=7), to_date=to_date, series="EQ"
+            )
+            if df is not None and not df.empty:
+                df = df.sort_values(by="DATE")
+                on_or_before_event = df[df["DATE"].dt.date <= event_date]
+                if not on_or_before_event.empty:
+                    entry_close = float(on_or_before_event.iloc[-1]["CLOSE"])
+                    current_close = float(df.iloc[-1]["CLOSE"])
+                    if df.iloc[-1]["DATE"].date() == on_or_before_event.iloc[-1]["DATE"].date():
+                        # No trading session has closed since the event yet -
+                        # genuinely too early to read a move, not a data gap.
+                        signal = "HOLD"
+                    else:
+                        pct_move = (current_close - entry_close) / entry_close * 100
+                        if pct_move >= SIGNAL_RALLY_ALREADY_PLAYED_OUT_PCT:
+                            signal = "SELL"
+                        elif pct_move > 0:
+                            signal = "BUY"
+                        else:
+                            signal = "HOLD"
+    except Exception:
+        signal = "N/A"
+
+    _signal_cache[cache_key] = (datetime.now(timezone.utc), signal)
+    return signal
 
 
 def _load_keyword_config() -> dict:
@@ -227,6 +306,45 @@ def _save_meta(meta: dict) -> None:
         json.dump(meta, f)
 
 
+def _entry_to_scanned_row(entry: dict, matched: bool, symbols: list[str], keyword: str | None, source: str) -> dict:
+    return {
+        "Date": entry.get("published", "") or entry.get("updated", ""),
+        "Title": entry.get("title", ""),
+        "Link": entry.get("link", ""),
+        "Matched": matched,
+        "MatchedKeyword": keyword or "",
+        "MatchedSymbols": ",".join(symbols),
+        "Source": source,
+    }
+
+
+def _save_scanned(rows: list[dict]) -> None:
+    """Every Ministry of Defence release the last refresh/historical fetch
+    saw, matched or not - lets the UI show what got filtered out and why,
+    not just the survivors kept in events.csv. Overwritten on each new scan
+    (this is "what did we just see", not an accumulating history like
+    events.csv - the feed's own rolling window already limits how far back
+    a single scan can look anyway)."""
+    with open(EVENT_WATCHER_SCANNED_PATH, "w", encoding="utf-8") as f:
+        json.dump(rows, f)
+
+
+def get_scanned() -> list[dict]:
+    if not os.path.exists(EVENT_WATCHER_SCANNED_PATH):
+        return []
+    with open(EVENT_WATCHER_SCANNED_PATH, "r", encoding="utf-8") as f:
+        rows = json.load(f)
+    # Sort by the actual parsed timestamp, not the raw string - LIVE rows use
+    # RFC-822 dates ("Wed, 16 Sep 2026 11:42:00 +0530"), which don't sort
+    # correctly as text (weekday names/unpadded fields break lexical order).
+    # Unparseable dates sort last rather than crashing or scattering randomly.
+    return sorted(
+        rows,
+        key=lambda r: pd.to_datetime(r.get("Date", ""), errors="coerce", utc=True) or pd.Timestamp.min.tz_localize("UTC"),
+        reverse=True,
+    )
+
+
 def load_events() -> pd.DataFrame:
     if not os.path.exists(EVENT_WATCHER_EVENTS_PATH):
         return pd.DataFrame(columns=COLUMNS)
@@ -240,12 +358,19 @@ def get_state() -> dict:
     meta = _load_meta()
     events = load_events()
     if not events.empty:
-        events = events.sort_values("Date", ascending=False)
+        # Sort by the actual parsed timestamp, not the raw string - see
+        # get_scanned()'s comment on why RFC-822 dates don't sort as text.
+        events = events.assign(_sort_ts=pd.to_datetime(events["Date"], errors="coerce", utc=True))
+        events = events.sort_values("_sort_ts", ascending=False, na_position="last").drop(columns="_sort_ts")
+    records = events.to_dict("records")
+    for row in records:
+        symbols = [s for s in str(row.get("MatchedSymbols", "")).split(",") if s]
+        row["Signal"] = _price_signal(symbols, row.get("Date", ""))
     return {
         "last_checked": meta.get("last_checked"),
         "last_error": meta.get("last_error"),
         "watchlist": {symbol: names[0] for symbol, names in WATCHLIST.items()},
-        "events": events.to_dict("records"),
+        "events": records,
     }
 
 
@@ -270,15 +395,16 @@ def refresh() -> dict:
         defence_entries = [e for e in parsed.entries if MINISTRY_FILTER in e.get("author", "").lower()]
 
         new_rows = []
+        scanned_rows = []
         existing_links = set(existing["Link"]) if not existing.empty else set()
         for entry in defence_entries:
             title = entry.get("title", "")
             link = entry.get("link", "")
-            if link in existing_links:
-                continue
             symbols = _match_symbols(title)
             keyword = _match_keyword(title)
-            if not symbols or not keyword:
+            matched = bool(symbols and keyword)
+            scanned_rows.append(_entry_to_scanned_row(entry, matched, symbols, keyword, "LIVE"))
+            if link in existing_links or not matched:
                 continue
             published = entry.get("published", "") or entry.get("updated", "")
             new_rows.append(
@@ -291,6 +417,8 @@ def refresh() -> dict:
                     "Source": "LIVE",
                 }
             )
+
+        _save_scanned(scanned_rows)
 
         if new_rows:
             combined = pd.concat([existing, pd.DataFrame(new_rows, columns=COLUMNS)], ignore_index=True)
@@ -373,14 +501,15 @@ def fetch_historical(target_iso_date: str) -> dict:
         existing = load_events()
         existing_links = set(existing["Link"]) if not existing.empty else set()
         new_rows = []
+        scanned_rows = []
         for entry in defence_entries:
             title = entry.get("title", "")
             link = entry.get("link", "")
-            if link in existing_links:
-                continue
             symbols = _match_symbols(title)
             keyword = _match_keyword(title)
-            if not symbols or not keyword:
+            matched = bool(symbols and keyword)
+            scanned_rows.append(_entry_to_scanned_row(entry, matched, symbols, keyword, "HISTORICAL"))
+            if link in existing_links or not matched:
                 continue
             new_rows.append(
                 {
@@ -392,6 +521,8 @@ def fetch_historical(target_iso_date: str) -> dict:
                     "Source": "HISTORICAL",
                 }
             )
+
+        _save_scanned(scanned_rows)
 
         if new_rows:
             combined = pd.concat([existing, pd.DataFrame(new_rows, columns=COLUMNS)], ignore_index=True)

@@ -20,6 +20,11 @@ def refresh_events():
     return ew.refresh()
 
 
+@router.get("/scanned")
+def get_scanned_events():
+    return {"scanned": ew.get_scanned()}
+
+
 class HistoricalRequest(BaseModel):
     date: str
 
