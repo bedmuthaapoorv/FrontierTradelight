@@ -41,7 +41,7 @@ export default function Backtest() {
   const [start, setStart] = useState('2021-01-01')
   const [end, setEnd] = useState('2026-01-01')
   const [capital, setCapital] = useState(100000)
-  const [maxPositions, setMaxPositions] = useState(10)
+  const [maxPositions, setMaxPositions] = useState(6)
 
   const [running, setRunning] = useState(false)
   const [day, setDay] = useState<number | null>(null)

@@ -364,7 +364,6 @@ export interface EventWatcherRow {
   MatchedKeyword: string
   MatchedSymbols: string
   Source: 'LIVE' | 'HISTORICAL'
-  Signal: 'BUY' | 'HOLD' | 'SELL' | 'N/A'
 }
 
 export interface EventWatcherState {
@@ -372,16 +371,6 @@ export interface EventWatcherState {
   last_error: string | null
   watchlist: Record<string, string>
   events: EventWatcherRow[]
-}
-
-export interface ScannedReleaseRow {
-  Date: string
-  Title: string
-  Link: string
-  Matched: boolean
-  MatchedKeyword: string
-  MatchedSymbols: string
-  Source: 'LIVE' | 'HISTORICAL'
 }
 
 /** Client for api/routers/event_watcher.py - scans PIB press releases for
@@ -404,7 +393,6 @@ export const eventWatcherApi = {
     }>('/event-watcher/historical', { method: 'POST', body: JSON.stringify({ date: isoDate }) }),
   clearHistorical: () =>
     request<{ status: string; removed: number }>('/event-watcher/historical', { method: 'DELETE' }),
-  getScanned: () => request<{ scanned: ScannedReleaseRow[] }>('/event-watcher/scanned'),
 }
 
 export interface WatchlistGroup {

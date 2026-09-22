@@ -2,7 +2,7 @@
 
 ## Strategy Metadata
 
-Strategy Name: Breakout Momentum v6
+Strategy Name: Breakout Momentum v8
 Market: India (NSE/BSE)
 Timeframe: Daily
 Holding Period: Trend Trade (1-90 Days)
@@ -47,6 +47,52 @@ the overall market is correcting. This is a stand-in for the Nifty-based
 market-regime filter real trend traders use, built entirely from data this
 pipeline already has.
 
+v7 loosens Rule 4's volume confirmation. Analyzing v6's near-misses (the
+Missed Opportunities tab, stocks that failed exactly one mandatory rule)
+found Volume Confirmation was by far the single largest blocking reason -
+6,654 of 10,669 near-misses (62%) over the 5-year benchmark range, more
+than 4x the next largest category. Those blocked stocks still averaged a
++1.49% 20-day forward return at a 54% win rate - not a standout number,
+but not a red flag either, and notably better than v6's own actual funded
+trades (+Rs.1.54 mean profit at only a 39% win rate). The day-over-day
+clause (`Volume[-1] > Volume[-2]`) is the more likely culprit: it rejects
+a stock on an already-elevated, above-average volume day just because
+yesterday happened to be even higher - two strong volume days in a row is
+arguably a BETTER breakout signal than one, not a worse one. v7 drops that
+clause, keeping only the absolute 1.3x-average bar, which is the part of
+the rule actually measuring "is volume elevated."
+
+**v7 backtested worse, not better**: CAGR +8.00%/yr (vs v6's +10.03%),
+MaxDD -24.0% (vs -18.1%), Composite 0.24 (vs 0.55). More signals fired as
+expected (2,197 vs 1,300 evaluated, 408 vs 383 funded), but the extra
+volume diluted returns and worsened drawdown rather than adding clean
+incremental trades - competition for the fixed 10 position slots also
+got markedly worse (1,789 vs 917 skipped for lack of capital). The
+near-miss methodology that motivated v7 measures a naive fixed 20-day
+hold, which misses two things the real backtest captures: the ATR
+trailing stop can exit an admitted trade early on a whipsaw before a
+20-day window would show a profit, and every extra signal competes with
+the existing ones for the same limited slots rather than being purely
+additive. Kept as a recorded, honest negative result - not reverted here,
+since v8 tests a second, independent hypothesis on top of it (below); if
+v8 doesn't recover v6's performance, Rule 4's day-over-day clause should
+go back in a future version.
+
+v8 fixes Rule 1's liquidity floor, which has the exact same defect just
+fixed in Trendline Bounce Confirmation v4: a flat `MA(Volume, 20) >=
+100000` share-count threshold, unexamined since v1, with no recorded
+justification for the number. Raw share count is the wrong unit for a
+liquidity floor - 100,000 shares/day means very different things for a
+Rs.50 stock and a Rs.5,000 stock, even though both pass the identical
+threshold. Replaced with the same turnover floor already validated for
+Trendline v4 (MA(Volume * Close, 20) >= Rs. 5 crore/day, checked against
+this project's actual cached universe data - even the weakest 5% of
+stocks by turnover clear ~Rs. 110 crore/day, ~20x this floor). This is an
+independent hypothesis from v7's Rule 4 change - if v8 backtests worse
+than v6 as well, that's evidence the Rule 4 change (not the liquidity
+floor) is the actual problem; if v8 recovers or beats v6's numbers, the
+liquidity fix was worth keeping regardless of Rule 4's outcome.
+
 ---
 
 ## Mandatory Filters
@@ -55,7 +101,7 @@ All rules below MUST pass.
 
 ---
 
-### Rule 1: Minimum Liquidity Floor
+### Rule 1: Minimum Liquidity Floor (v8 - turnover-based)
 
 Description:
 Reject illiquid stocks so volume signals are meaningful and exits are
@@ -63,13 +109,32 @@ executable without slippage.
 
 Condition:
 
-MA(Volume, 20) >= 100000
+MA(Volume * Close, 20) >= 50000000
 AND
 Close >= 50
 
+Where:
+MA(Volume * Close, 20) = the 20-day average of daily traded value in
+Rupees (each day's Volume times that day's Close, averaged over the last
+20 trading days) - i.e. turnover, not raw share count.
+
 Notes:
-- Kept deliberately loose since the universe is already Nifty-50-derived
-  (large, liquid names) - this should rarely bind, it's a safety floor.
+- v7 and earlier used a flat `MA(Volume, 20) >= 100000` share-count floor,
+  unexamined since v1 with no recorded justification for the number -
+  the same defect already fixed in Trendline Bounce Confirmation v4.
+  Turnover (Volume x Close), not raw share count, is what actually
+  determines whether a position can be entered/exited without slippage -
+  a flat share-count floor treats a Rs.50 stock trading 200k shares/day
+  the same as a Rs.5,000 stock trading 200k shares/day, even though the
+  second one has 100x the actual Rupee liquidity.
+- Rs. 5 crore/day (50000000) was checked against this project's actual
+  cached universe data, not assumed: even the weakest 5% of stocks by
+  turnover clear roughly Rs. 110 crore/day in that data, ~20x this floor -
+  consistent with the original share-count version's intent ("should
+  rarely bind, it's a safety floor"), just expressed in units that mean
+  the same thing across different price levels.
+- Close >= 50 is kept as a separate floor against low-priced/penny-stock
+  noise, not a liquidity proxy.
 
 ---
 
@@ -121,7 +186,7 @@ Notes:
 
 ---
 
-### Rule 4: Volume Confirmation (Breakout Volume)
+### Rule 4: Volume Confirmation (Breakout Volume) (v7 - day-over-day clause dropped)
 
 Description:
 A breakout without volume is a weak/fakeout signal. Require a real
@@ -129,11 +194,19 @@ volume surge, not just mild acceleration.
 
 Condition:
 
-Volume[-1] > Volume[-2]
-AND
 Volume[-1] >= 1.3 * MA(Volume, 20)
 
 Notes:
+- v6 additionally required `Volume[-1] > Volume[-2]` (today's volume must
+  exceed yesterday's). Near-miss analysis on v6's 5-year backtest showed
+  this rule alone blocked 62% of all near-misses - by far the largest
+  single category - while those blocked stocks still averaged a positive
+  +1.49% 20-day forward return. The day-over-day comparison is the likely
+  cause: it rejects a stock sitting on genuinely elevated volume (already
+  comfortably above 1.3x average) purely because yesterday happened to be
+  even higher - a second strong-volume day is not evidence AGAINST a
+  breakout. v7 keeps only the absolute 1.3x-average threshold, which is
+  the part of the rule that actually measures "is participation elevated."
 - Raised from 0.8x (pullback version) to 1.3x average - breakout volume
   should be visibly elevated, not merely average.
 - Reverted a v4.1 tightening to 2.0x that shrank the sample to a
@@ -293,29 +366,14 @@ Return:
 
 Where:
 
-Ideal Entry Price Low = Close (today's signal close - the minimum
-sensible entry, matching what the backtester itself assumes: it enters
-at this exact close price, never better).
+Ideal Entry Price Low = Close
+Ideal Entry Price High = Close * 1.01
 
-Ideal Entry Price High = the HIGHER of (a) Highest_Close(20) (the
-20-day high this is a breakout OF), or (b) Close * 1.01, whichever is
-larger.
-
-Notes:
-- This strategy's entire premise is a breakout at/near the 20-day high
-  (Rule 5), so a meaningful entry zone spans from today's close UP TO
-  actually clearing that high, not just today's close repeated as both
-  bounds - a signal fires as soon as Close is within 2% BELOW the high,
-  so most signals still have real room between "today's close" and "the
-  high" before the breakout is fully confirmed.
-- The `Close * 1.01` floor only matters for the rare case where Close is
-  already AT or ABOVE Highest_Close(20) (a confirmed breakout day) - in
-  that case there's no meaningful gap left to the old high, so fall back
-  to the same small 1% realistic-fill buffer used before, rather than a
-  zero-width or inverted range.
-- Do NOT use this band to change entry logic anywhere else (Mandatory
-  Filters, Ranking Rules, backtester) - it is a display-only suggestion
-  for manual order placement, same as in prior strategy versions.
+This mirrors what the backtester actually does (enters at Close on the
+signal day) while giving a small band, since a real fill a moment after
+the signal is rarely at the exact closing tick. Do not use this band to
+change entry logic anywhere else (Mandatory Filters, Ranking Rules,
+backtester) - it is a display-only suggestion for manual order placement.
 
 Sort:
 

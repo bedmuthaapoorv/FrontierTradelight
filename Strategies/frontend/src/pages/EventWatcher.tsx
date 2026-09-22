@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { eventWatcherApi, type EventWatcherState, type ScannedReleaseRow } from '../api'
+import { eventWatcherApi, type EventWatcherState } from '../api'
 import KeywordDrawer from '../components/KeywordDrawer'
 
 function formatDate(iso: string) {
@@ -28,18 +28,12 @@ export default function EventWatcher() {
   const [fetchingHistorical, setFetchingHistorical] = useState(false)
   const [historicalMessage, setHistoricalMessage] = useState<string | null>(null)
   const [keywordDrawerOpen, setKeywordDrawerOpen] = useState(false)
-  const [scanned, setScanned] = useState<ScannedReleaseRow[] | null>(null)
-  const [scannedOpen, setScannedOpen] = useState(false)
 
   const load = () => {
     eventWatcherApi
       .get()
       .then(setData)
       .catch((err) => setError(err.message))
-    eventWatcherApi
-      .getScanned()
-      .then((r) => setScanned(r.scanned))
-      .catch(() => setScanned([]))
   }
 
   useEffect(load, [])
@@ -114,18 +108,11 @@ export default function EventWatcher() {
 
   return (
     <main className="flex-1 overflow-y-auto px-6 py-10">
-      <div className="mx-auto flex max-w-[1280px] items-start gap-6">
-      <div className="flex min-w-0 flex-1 flex-col gap-7">
+      <div className="mx-auto flex max-w-[920px] flex-col gap-7">
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h1 className="text-[22px] font-extrabold tracking-tight">Event Watcher</h1>
             <div className="flex items-center gap-2">
-              <button
-                onClick={() => setScannedOpen((v) => !v)}
-                className="rounded-[8px] border border-gray-300 bg-white px-3.5 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50"
-              >
-                {scannedOpen ? 'Hide all releases' : `All releases scanned${scanned ? ` (${scanned.length})` : ''}`}
-              </button>
               <button
                 onClick={() => setKeywordDrawerOpen(true)}
                 className="rounded-[8px] border border-gray-300 bg-white px-3.5 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50"
@@ -237,9 +224,6 @@ export default function EventWatcher() {
                       <th className="px-4 py-2.5 text-left text-[10.5px] font-bold uppercase tracking-wide text-gray-400">
                         Source
                       </th>
-                      <th className="px-4 py-2.5 text-left text-[10.5px] font-bold uppercase tracking-wide text-gray-400">
-                        Signal
-                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -283,22 +267,6 @@ export default function EventWatcher() {
                             {row.Source}
                           </span>
                         </td>
-                        <td className="px-4 py-2.5">
-                          <span
-                            className={`rounded-full px-1.5 py-0.5 font-mono text-[10.5px] font-bold ${
-                              row.Signal === 'BUY'
-                                ? 'bg-accent-soft text-accent'
-                                : row.Signal === 'SELL'
-                                  ? 'bg-red-100 text-red-700'
-                                  : row.Signal === 'HOLD'
-                                    ? 'bg-amber-100 text-amber-700'
-                                    : 'bg-gray-100 text-gray-400'
-                            }`}
-                            title="Heuristic only, based on price move since the event date - not backtested."
-                          >
-                            {row.Signal}
-                          </span>
-                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -307,70 +275,6 @@ export default function EventWatcher() {
             </div>
           )}
         </div>
-      </div>
-
-      {scannedOpen && (
-        <aside className="sticky top-10 flex w-[360px] flex-shrink-0 flex-col gap-2 rounded-[14px] border border-gray-200 bg-white p-4 shadow-[0_1px_2px_rgba(16,24,40,0.03)]">
-          <div className="flex items-center justify-between">
-            <div className="text-[15px] font-extrabold">All releases scanned</div>
-            <button
-              onClick={() => setScannedOpen(false)}
-              className="text-xs font-semibold text-gray-400 hover:text-gray-700"
-            >
-              Close
-            </button>
-          </div>
-          <p className="text-[12px] leading-relaxed text-gray-400">
-            Every Ministry of Defence release the last refresh/historical fetch saw &mdash; matched (kept in the
-            table) and unmatched (filtered out), so you can see what got discarded and why.
-          </p>
-          <div className="flex max-h-[70vh] flex-col gap-2 overflow-y-auto pt-1">
-            {scanned === null ? (
-              <p className="text-xs text-gray-400">Loading...</p>
-            ) : scanned.length === 0 ? (
-              <p className="text-xs text-gray-400">
-                Nothing scanned yet &mdash; click &ldquo;Check PIB now&rdquo; or fetch a past date.
-              </p>
-            ) : (
-              scanned.map((row, i) => (
-                <div key={i} className="rounded-[10px] border border-gray-100 p-2.5">
-                  <div className="mb-1 flex items-center justify-between gap-2">
-                    <span className="font-mono text-[10.5px] text-gray-400">{formatDate(row.Date)}</span>
-                    <span
-                      className={`rounded-full px-1.5 py-0.5 font-mono text-[10px] font-bold ${
-                        row.Matched ? 'bg-accent-soft text-accent' : 'bg-gray-100 text-gray-400'
-                      }`}
-                    >
-                      {row.Matched ? 'MATCHED' : 'FILTERED OUT'}
-                    </span>
-                  </div>
-                  <div className="text-[12px] leading-snug text-gray-700">
-                    {row.Link ? (
-                      <a href={row.Link} target="_blank" rel="noreferrer" className="hover:underline">
-                        {row.Title}
-                      </a>
-                    ) : (
-                      row.Title
-                    )}
-                  </div>
-                  {row.Matched && (
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      {row.MatchedSymbols.split(',').map((s) => (
-                        <span
-                          key={s}
-                          className="rounded-full bg-accent-soft px-1.5 py-0.5 font-mono text-[10px] font-bold text-accent"
-                        >
-                          {s}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))
-            )}
-          </div>
-        </aside>
-      )}
       </div>
       <KeywordDrawer open={keywordDrawerOpen} onClose={() => setKeywordDrawerOpen(false)} />
     </main>
