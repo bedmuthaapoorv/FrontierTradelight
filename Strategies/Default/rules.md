@@ -2,7 +2,7 @@
 
 ## Strategy Metadata
 
-Strategy Name: Breakout Momentum v6
+Strategy Name: Breakout Momentum v9 (O'Neil Volume Test)
 Market: India (NSE/BSE)
 Timeframe: Daily
 Holding Period: Trend Trade (1-90 Days)
@@ -47,6 +47,77 @@ the overall market is correcting. This is a stand-in for the Nifty-based
 market-regime filter real trend traders use, built entirely from data this
 pipeline already has.
 
+v7 loosens Rule 4's volume confirmation. Analyzing v6's near-misses (the
+Missed Opportunities tab, stocks that failed exactly one mandatory rule)
+found Volume Confirmation was by far the single largest blocking reason -
+6,654 of 10,669 near-misses (62%) over the 5-year benchmark range, more
+than 4x the next largest category. Those blocked stocks still averaged a
++1.49% 20-day forward return at a 54% win rate - not a standout number,
+but not a red flag either, and notably better than v6's own actual funded
+trades (+Rs.1.54 mean profit at only a 39% win rate). The day-over-day
+clause (`Volume[-1] > Volume[-2]`) is the more likely culprit: it rejects
+a stock on an already-elevated, above-average volume day just because
+yesterday happened to be even higher - two strong volume days in a row is
+arguably a BETTER breakout signal than one, not a worse one. v7 drops that
+clause, keeping only the absolute 1.3x-average bar, which is the part of
+the rule actually measuring "is volume elevated."
+
+**v7 backtested worse, not better**: CAGR +8.00%/yr (vs v6's +10.03%),
+MaxDD -24.0% (vs -18.1%), Composite 0.24 (vs 0.55). More signals fired as
+expected (2,197 vs 1,300 evaluated, 408 vs 383 funded), but the extra
+volume diluted returns and worsened drawdown rather than adding clean
+incremental trades - competition for the fixed 10 position slots also
+got markedly worse (1,789 vs 917 skipped for lack of capital). The
+near-miss methodology that motivated v7 measures a naive fixed 20-day
+hold, which misses two things the real backtest captures: the ATR
+trailing stop can exit an admitted trade early on a whipsaw before a
+20-day window would show a profit, and every extra signal competes with
+the existing ones for the same limited slots rather than being purely
+additive. Kept as a recorded, honest negative result - not reverted here,
+since v8 tests a second, independent hypothesis on top of it (below); if
+v8 doesn't recover v6's performance, Rule 4's day-over-day clause should
+go back in a future version.
+
+v8 fixes Rule 1's liquidity floor, which has the exact same defect just
+fixed in Trendline Bounce Confirmation v4: a flat `MA(Volume, 20) >=
+100000` share-count threshold, unexamined since v1, with no recorded
+justification for the number. Raw share count is the wrong unit for a
+liquidity floor - 100,000 shares/day means very different things for a
+Rs.50 stock and a Rs.5,000 stock, even though both pass the identical
+threshold. Replaced with the same turnover floor already validated for
+Trendline v4 (MA(Volume * Close, 20) >= Rs. 5 crore/day, checked against
+this project's actual cached universe data - even the weakest 5% of
+stocks by turnover clear ~Rs. 110 crore/day, ~20x this floor). This is an
+independent hypothesis from v7's Rule 4 change - if v8 backtests worse
+than v6 as well, that's evidence the Rule 4 change (not the liquidity
+floor) is the actual problem; if v8 recovers or beats v6's numbers, the
+liquidity fix was worth keeping regardless of Rule 4's outcome.
+
+v9 tests a third, independent hypothesis on Rule 4, this time tightening
+rather than loosening it, based on O'Neil Global Advisors' "Breakouts:
+Pump Up the Volume" (May 2022), a quantitative study of ~197,000 O'Neil
+pattern breakout events across the U.S. market, 1995-2021. That study
+measured volume as the percent change over a 50-day average volume
+baseline (not 20-day), and found the relationship was NOT a fewer-false-
+breakouts effect: hit rate was flat at ~57% across every volume bucket,
+even ticking down slightly at the highest bucket. What actually scaled
+with volume was the SIZE of the move in both directions - average gain
+rose from 12.91% (volume change <50%) to 19.90% (volume change >=150%,
+i.e. volume >= 2.5x the 50-day average), while average loss also grew
+(-11.42% to -14.53%) - and because the gain grew faster than the loss,
+cumulative alpha over the following 63 trading days rose from 0.67% to
+2.79%, a 4x increase. v9 changes Rule 4 to match that exact threshold and
+window (50-day average, >=2.5x) to test whether this project's own
+backtest shows the same "bigger moves, not more of them" pattern, given
+this strategy's Rank Score already weights Volume_Score at 30% - which,
+if the O'Neil mechanism holds here too, is the right lever (ranking the
+biggest-volume breakouts highest for the limited position slots) rather
+than expecting Rule 4 alone to raise the win rate. This is a materially
+different change from v7's (loosening the multiplier while keeping the
+20-day window) - v7's result does not predict v9's, since v7 never tested
+a wider averaging window or a threshold in the direction the O'Neil data
+actually supports.
+
 ---
 
 ## Mandatory Filters
@@ -55,7 +126,7 @@ All rules below MUST pass.
 
 ---
 
-### Rule 1: Minimum Liquidity Floor
+### Rule 1: Minimum Liquidity Floor (v8 - turnover-based)
 
 Description:
 Reject illiquid stocks so volume signals are meaningful and exits are
@@ -63,13 +134,32 @@ executable without slippage.
 
 Condition:
 
-MA(Volume, 20) >= 100000
+MA(Volume * Close, 20) >= 50000000
 AND
 Close >= 50
 
+Where:
+MA(Volume * Close, 20) = the 20-day average of daily traded value in
+Rupees (each day's Volume times that day's Close, averaged over the last
+20 trading days) - i.e. turnover, not raw share count.
+
 Notes:
-- Kept deliberately loose since the universe is already Nifty-50-derived
-  (large, liquid names) - this should rarely bind, it's a safety floor.
+- v7 and earlier used a flat `MA(Volume, 20) >= 100000` share-count floor,
+  unexamined since v1 with no recorded justification for the number -
+  the same defect already fixed in Trendline Bounce Confirmation v4.
+  Turnover (Volume x Close), not raw share count, is what actually
+  determines whether a position can be entered/exited without slippage -
+  a flat share-count floor treats a Rs.50 stock trading 200k shares/day
+  the same as a Rs.5,000 stock trading 200k shares/day, even though the
+  second one has 100x the actual Rupee liquidity.
+- Rs. 5 crore/day (50000000) was checked against this project's actual
+  cached universe data, not assumed: even the weakest 5% of stocks by
+  turnover clear roughly Rs. 110 crore/day in that data, ~20x this floor -
+  consistent with the original share-count version's intent ("should
+  rarely bind, it's a safety floor"), just expressed in units that mean
+  the same thing across different price levels.
+- Close >= 50 is kept as a separate floor against low-priced/penny-stock
+  noise, not a liquidity proxy.
 
 ---
 
@@ -121,7 +211,7 @@ Notes:
 
 ---
 
-### Rule 4: Volume Confirmation (Breakout Volume)
+### Rule 4: Volume Confirmation (Breakout Volume) (v9 - O'Neil 50-day/2.5x threshold)
 
 Description:
 A breakout without volume is a weak/fakeout signal. Require a real
@@ -129,15 +219,29 @@ volume surge, not just mild acceleration.
 
 Condition:
 
-Volume[-1] > Volume[-2]
-AND
-Volume[-1] >= 1.3 * MA(Volume, 20)
+Volume[-1] >= 2.5 * MA(Volume, 50)
+
+Where:
+MA(Volume, 50) = the 50-day average of daily traded share volume (not the
+20-day window used in v7/v8).
 
 Notes:
-- Raised from 0.8x (pullback version) to 1.3x average - breakout volume
-  should be visibly elevated, not merely average.
-- Reverted a v4.1 tightening to 2.0x that shrank the sample to a
-  statistically meaningless size without proving beneficial.
+- v9 replaces v7/v8's `Volume[-1] >= 1.3 * MA(Volume, 20)` with the exact
+  window and threshold O'Neil Global Advisors' "Breakouts: Pump Up the
+  Volume" (May 2022) found produced the strongest, monotonically-best
+  alpha bucket in their 1995-2021 U.S. study: volume percent change over a
+  50-day average of >=150% (i.e. volume >= 2.5x that average). See the
+  Strategy Rationale section above for the full comparison and why this is
+  a materially different change from v7's (which loosened a 20-day-window
+  rule, not tightened a 50-day one).
+- Unlike v6's dropped `Volume[-1] > Volume[-2]` day-over-day clause (v7),
+  this is a single absolute threshold against a longer, smoother baseline
+  - a 50-day average is less noisy than a 20-day one, so this should
+  actually fire on genuinely elevated days, not on a temporarily low
+  average distorted by a quiet recent stretch.
+- Expect this to cut the funded-trade count substantially versus v7/v8's
+  1.3x/20-day bar - that is the point of the test, not a flaw: the O'Neil
+  study's edge came from being more selective, not less.
 - Ignore today's incomplete session volume throughout.
 - Stocks with missing volume data should be rejected.
 
@@ -256,8 +360,8 @@ Where:
 Sector_Strength_Score = max(0, 100 - (SectorRank - 1) * 10)
 (Rank 1 = 100, declining 10 points per rank)
 
-Volume_Score = min(100, (Volume[-1] / MA(Volume, 20)) * 40)
-(1.3x average volume = 52 points, 2.5x average volume or more = 100 points)
+Volume_Score = min(100, (Volume[-1] / MA(Volume, 50)) * 40)
+(2.5x average volume = 100 points, matching Rule 4's new baseline window)
 
 Breakout_Quality_Score = max(0, 100 - ((Highest_Close(20) - Close) / Highest_Close(20) * 100) * 30)
 (Close exactly at the 20-day high = 100 points, 2% below it = ~40 points)
@@ -279,15 +383,28 @@ Return:
 - Sector
 - Sector Rank
 - Current Price
+- Ideal Entry Price Low
+- Ideal Entry Price High
 - Daily RSI(14)
 - Volume[-1]
 - Volume[-2]
-- 20D Average Volume
-- Volume[-1] / 20D Avg (ratio)
+- 50D Average Volume
+- Volume[-1] / 50D Avg (ratio)
 - 20-Day High
 - Distance From 20-Day High (%)
 - Close vs Close[-20] (%)
 - Rank Score
+
+Where:
+
+Ideal Entry Price Low = Close
+Ideal Entry Price High = Close * 1.01
+
+This mirrors what the backtester actually does (enters at Close on the
+signal day) while giving a small band, since a real fill a moment after
+the signal is rarely at the exact closing tick. Do not use this band to
+change entry logic anywhere else (Mandatory Filters, Ranking Rules,
+backtester) - it is a display-only suggestion for manual order placement.
 
 Sort:
 

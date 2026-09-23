@@ -12,99 +12,102 @@ def evaluate_stock(symbol, df, universe, sector_ranks, market_breadth):
     }
 
     try:
-        if df is None or len(df) < 126:
-            results["FailedRules"].append("Insufficient data history")
+        if df is None or len(df) < 50:
+            results["FailedRules"].append("Insufficient data")
             return results
 
         # Data preparation
-        close = df['close']
-        volume = df['volume']
+        close = df['close'].values
+        volume = df['volume'].values
+        high = df['high'].values
+        low = df['low'].values
         
         # Indicators
-        ma20 = ta.sma(close, length=20)
-        ma50 = ta.sma(close, length=50)
-        ma126 = ta.sma(close, length=126)
-        rsi = ta.rsi(close, length=14)
-        vol_ma20 = ta.sma(volume, length=20)
+        ma20 = ta.sma(df['close'], length=20)
+        ma50 = ta.sma(df['close'], length=50)
+        ma126 = ta.sma(df['close'], length=126)
+        rsi = ta.rsi(df['close'], length=14)
+        vol_ma50 = ta.sma(df['volume'], length=50)
         
-        # Current values
-        curr_close = close.iloc[-1]
-        prev_close = close.iloc[-2]
-        prev20_close = close.iloc[-21] if len(df) >= 21 else close.iloc[0]
+        # Turnover calculation
+        turnover = df['volume'] * df['close']
+        ma_turnover20 = turnover.rolling(window=20).mean()
         
-        curr_vol = volume.iloc[-1]
-        prev_vol = volume.iloc[-2]
-        curr_vol_ma20 = vol_ma20.iloc[-1]
+        # Values at last session (index -1)
+        c_curr = close[-1]
+        c_prev = close[-2]
+        c_20d_ago = close[-21] if len(close) > 20 else close[0]
+        v_curr = volume[-1]
+        v_prev = volume[-2]
         
-        curr_ma20 = ma20.iloc[-1]
-        curr_ma50 = ma50.iloc[-1]
-        curr_ma126 = ma126.iloc[-1]
-        curr_rsi = rsi.iloc[-1]
-        
-        highest_close_20 = close.iloc[-20:].max()
-        
-        # Metadata
-        stock_info = universe.get(symbol, {"Name": "Unknown", "Sector": "Unknown"})
-        sector_rank = sector_ranks.get(symbol, 99)
+        ma20_val = ma20.iloc[-1]
+        ma50_val = ma50.iloc[-1]
+        ma126_val = ma126.iloc[-1]
+        rsi_val = rsi.iloc[-1]
+        vol_ma50_val = vol_ma50.iloc[-1]
+        turnover_ma20_val = ma_turnover20.iloc[-1]
+        h20 = np.max(close[-20:])
         
         # Mandatory Rules
         failed = []
         
-        if not (curr_vol_ma20 >= 100000 and curr_close >= 50):
-            failed.append("Liquidity floor not met")
+        if not (turnover_ma20_val >= 50000000 and c_curr >= 50):
+            failed.append("Rule 1: Minimum Liquidity Floor (Turnover/Price)")
             
-        if not (curr_close > curr_ma20 > curr_ma50 > curr_ma126):
-            failed.append("Trend structure (MA stack) not met")
+        if not (c_curr > ma20_val and ma20_val > ma50_val and ma50_val > ma126_val):
+            failed.append("Rule 2: Trend Structure (MA Stack)")
             
-        if not (55 <= curr_rsi <= 75):
-            failed.append(f"RSI outside range ({curr_rsi:.1f})")
+        if not (55 <= rsi_val <= 75):
+            failed.append(f"Rule 3: RSI outside range (RSI: {rsi_val:.2f})")
             
-        if not (prev_vol > volume.iloc[-3] and prev_vol >= 1.3 * vol_ma20.iloc[-2]):
-            failed.append("Volume confirmation not met")
+        if not (v_curr >= 2.5 * vol_ma50_val):
+            failed.append("Rule 4: Volume Confirmation (50D/2.5x)")
             
-        if not (curr_close >= 0.98 * highest_close_20 and curr_close > prev_close):
-            failed.append("Breakout proximity not met")
+        if not (c_curr >= 0.98 * h20 and c_curr > c_prev):
+            failed.append("Rule 5: Breakout Proximity to 20D High")
             
-        if not (curr_close <= 1.25 * prev20_close):
-            failed.append("Stock extended too far")
+        if not (c_curr <= 1.25 * c_20d_ago):
+            failed.append("Rule 6: Already Extended Too Far")
             
-        if not (sector_rank <= 10):
-            failed.append(f"Sector rank {sector_rank} not in top 10")
+        rank = sector_ranks.get(symbol, 99)
+        if not (rank <= 10):
+            failed.append(f"Rule 7: Sector rank {rank} not in top 10")
             
         if not (market_breadth >= 45):
-            failed.append(f"Market breadth {market_breadth} below threshold")
+            failed.append(f"Rule 8: Market Breadth {market_breadth} below 45")
 
-        # Details population
+        results["FailedRules"] = failed
+        results["Passed"] = len(failed) == 0
+        
+        # Ranking Score
+        s_score = max(0, 100 - (rank - 1) * 10)
+        v_score = min(100, (v_curr / vol_ma50_val) * 40)
+        bq_score = max(0, 100 - ((h20 - c_curr) / h20 * 100) * 30)
+        rsi_score = max(0, 100 - abs(rsi_val - 65) * 4)
+        
+        results["ClosenessScore"] = (0.3 * s_score) + (0.3 * v_score) + (0.25 * bq_score) + (0.15 * rsi_score)
+        
+        # Details
+        meta = universe.get(symbol, {"Name": "Unknown", "Sector": "Unknown"})
         results["Details"] = {
-            "Company Name": stock_info["Name"],
-            "Sector": stock_info["Sector"],
-            "Sector Rank": sector_rank,
-            "Current Price": curr_close,
-            "Daily RSI(14)": curr_rsi,
-            "Volume[-1]": prev_vol,
-            "Volume[-2]": volume.iloc[-3],
-            "20D Average Volume": vol_ma20.iloc[-2],
-            "Volume[-1] / 20D Avg (ratio)": prev_vol / vol_ma20.iloc[-2] if vol_ma20.iloc[-2] > 0 else 0,
-            "20-Day High": highest_close_20,
-            "Distance From 20-Day High (%)": ((highest_close_20 - curr_close) / highest_close_20) * 100,
-            "Close vs Close[-20] (%)": ((curr_close - prev20_close) / prev20_close) * 100
+            "Symbol": symbol,
+            "Company Name": meta["Name"],
+            "Sector": meta["Sector"],
+            "Sector Rank": rank,
+            "Current Price": c_curr,
+            "Ideal Entry Price Low": c_curr,
+            "Ideal Entry Price High": c_curr * 1.01,
+            "Daily RSI(14)": rsi_val,
+            "Volume[-1]": v_curr,
+            "Volume[-2]": v_prev,
+            "50D Average Volume": vol_ma50_val,
+            "Volume[-1] / 50D Avg (ratio)": v_curr / vol_ma50_val,
+            "20-Day High": h20,
+            "Distance From 20-Day High (%)": ((h20 - c_curr) / h20) * 100,
+            "Close vs Close[-20] (%)": ((c_curr - c_20d_ago) / c_20d_ago) * 100,
+            "Rank Score": results["ClosenessScore"]
         }
-
-        # Scoring
-        if not failed:
-            s_score = max(0, 100 - (sector_rank - 1) * 10)
-            v_score = min(100, (prev_vol / vol_ma20.iloc[-2]) * 40)
-            b_score = max(0, 100 - ((highest_close_20 - curr_close) / highest_close_20 * 100) * 30)
-            r_score = max(0, 100 - abs(curr_rsi - 65) * 4)
-            
-            rank_score = (0.3 * s_score) + (0.3 * v_score) + (0.25 * b_score) + (0.15 * r_score)
-            results["ClosenessScore"] = rank_score
-            results["Details"]["Rank Score"] = rank_score
-            results["Passed"] = True
-        else:
-            results["FailedRules"] = failed
-            results["ClosenessScore"] = 0.0
-
+        
     except Exception as e:
         results["FailedRules"].append(f"Calculation error: {str(e)}")
         

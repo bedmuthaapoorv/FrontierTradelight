@@ -135,6 +135,16 @@ Critical implementation constraints:
   specific points named), even if it's simpler to implement. This silently
   weakens the rule and produces a different, more lenient strategy than the
   one specified.
+- `df` is indexed by DATE, not by a plain 0..N-1 integer range. Never index
+  a column by an integer position with bracket notation (e.g. `close[i]`,
+  `low[j]`) - pandas looks that up as a LABEL, not a position, and raises a
+  KeyError the moment `i` isn't literally a date in the index (which is
+  every single row). Whenever a rule requires walking the data by integer
+  position (pivot/extrema detection, a rolling window scan, "the day at
+  index i", trendline fitting, etc.), first convert to a plain positional
+  array with `.values` (e.g. `close = df['close'].values`) and index that,
+  or use `.iloc[i]` on the original Series - never bracket-index the
+  Series/DataFrame itself by an integer meant as a position.
 
 RULES:
 
