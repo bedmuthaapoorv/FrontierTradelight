@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 import { eventWatcherKeywordsApi, type KeywordConfig } from '../api'
 
+// The only three shipbuilder symbols Event Watcher knows about. Used to
+// populate the "which symbol does this alias point to" dropdown when
+// adding a new vessel-class alias.
 const SYMBOL_OPTIONS = ['COCHINSHIP', 'MAZDOCK', 'GRSE']
 
 interface KeywordDrawerProps {
@@ -16,16 +19,35 @@ interface KeywordDrawerProps {
  * Always mounted so it can animate in/out via translate-x rather than
  * mount/unmount. */
 export default function KeywordDrawer({ open, onClose }: KeywordDrawerProps) {
+  // The full keyword config as last loaded/edited. null until the GET
+  // request finishes, which is also how the UI knows whether to show the
+  // "Loading..." message or the actual form.
   const [config, setConfig] = useState<KeywordConfig | null>(null)
+  // Set if the initial GET request fails, so we can show the user why
+  // nothing loaded instead of leaving them staring at a blank drawer.
   const [error, setError] = useState<string | null>(null)
+  // True while a save is in flight - disables the Save button and swaps
+  // its label to "Saving..." so the user can't double-submit.
   const [saving, setSaving] = useState(false)
+  // Short status text shown next to the Save button (e.g. "Saved." or an
+  // error) - cleared on the next edit so it doesn't linger and mislead.
   const [message, setMessage] = useState<string | null>(null)
 
+  // What the user is currently typing into the "Add a keyword" box, before
+  // they hit Add/Enter - kept separate from `config` since it's not a
+  // saved keyword yet, just a draft.
   const [newKeyword, setNewKeyword] = useState('')
+  // Same idea as newKeyword, but one per shipbuilder group (keyed by
+  // symbol) since each watchlist card has its own "add a name fragment"
+  // input running at the same time.
   const [nameDrafts, setNameDrafts] = useState<Record<string, string>>({})
+  // Draft text for the vessel-class alias phrase being added.
   const [newAliasPhrase, setNewAliasPhrase] = useState('')
+  // Which symbol the new alias should map to, chosen from SYMBOL_OPTIONS -
+  // defaults to the first option so the dropdown always has a valid value.
   const [newAliasSymbol, setNewAliasSymbol] = useState(SYMBOL_OPTIONS[0])
 
+  // Loads the current keyword config from the backend whenever the drawer opens.
   useEffect(() => {
     if (!open) return
     setError(null)
@@ -36,19 +58,26 @@ export default function KeywordDrawer({ open, onClose }: KeywordDrawerProps) {
       .catch((err) => setError(err.message))
   }, [open])
 
+  // Removes one event keyword by its index in the list.
   const removeKeyword = (i: number) => {
     setConfig((c) => c && { ...c, event_keywords: c.event_keywords.filter((_, idx) => idx !== i) })
     setMessage(null)
   }
 
+  // Called when the user clicks "Add" (or presses Enter) next to the
+  // keyword input. Takes whatever they typed, and if it's not blank and
+  // not already in the list, adds it as a new keyword. Then clears the
+  // input box so they can type the next one.
   const addKeyword = () => {
     const v = newKeyword.trim().toLowerCase()
     if (!v) return
-    setConfig((c) => c && (c.event_keywords.includes(v) ? c : { ...c, event_keywords: [...c.event_keywords, v] }))
+    setConfig(
+        (c) => c && (c.event_keywords.includes(v) ? c : { ...c, event_keywords: [...c.event_keywords, v] }))
     setNewKeyword('')
     setMessage(null)
   }
 
+  // Removes one name fragment from a shipbuilder's watchlist group.
   const removeWatchlistName = (symbol: string, name: string) => {
     setConfig(
       (c) =>
@@ -60,6 +89,7 @@ export default function KeywordDrawer({ open, onClose }: KeywordDrawerProps) {
     setMessage(null)
   }
 
+  // Adds the pending name-fragment draft to a shipbuilder's watchlist group, skipping duplicates.
   const addWatchlistName = (symbol: string) => {
     const v = (nameDrafts[symbol] || '').trim().toLowerCase()
     if (!v) return
@@ -76,11 +106,13 @@ export default function KeywordDrawer({ open, onClose }: KeywordDrawerProps) {
     setMessage(null)
   }
 
+  // Removes one vessel-class alias by its index in the list.
   const removeAlias = (i: number) => {
     setConfig((c) => c && { ...c, vessel_class_aliases: c.vessel_class_aliases.filter((_, idx) => idx !== i) })
     setMessage(null)
   }
 
+  // Adds the pending phrase/symbol draft as a new vessel-class alias.
   const addAlias = () => {
     const phrase = newAliasPhrase.trim().toLowerCase()
     if (!phrase) return
@@ -91,6 +123,7 @@ export default function KeywordDrawer({ open, onClose }: KeywordDrawerProps) {
     setMessage(null)
   }
 
+  // Saves the current (locally edited) config to the backend.
   const onSave = async () => {
     if (!config) return
     setSaving(true)
