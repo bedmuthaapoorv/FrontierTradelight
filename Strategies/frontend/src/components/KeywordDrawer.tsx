@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { eventWatcherKeywordsApi, type KeywordConfig } from '../api'
 
-// The only three shipbuilder symbols Event Watcher knows about. Used to
-// populate the "which symbol does this alias point to" dropdown when
-// adding a new vessel-class alias.
-const SYMBOL_OPTIONS = ['COCHINSHIP', 'MAZDOCK', 'GRSE']
+// Fallback used only until the real watchlist loads from the backend (see
+// symbolOptions below) - keeps newAliasSymbol's initial useState call valid
+// without needing config to exist yet.
+const FALLBACK_SYMBOL_OPTIONS = ['COCHINSHIP', 'MAZDOCK', 'GRSE']
 
 interface KeywordDrawerProps {
   open: boolean
@@ -43,18 +43,32 @@ export default function KeywordDrawer({ open, onClose }: KeywordDrawerProps) {
   const [nameDrafts, setNameDrafts] = useState<Record<string, string>>({})
   // Draft text for the vessel-class alias phrase being added.
   const [newAliasPhrase, setNewAliasPhrase] = useState('')
-  // Which symbol the new alias should map to, chosen from SYMBOL_OPTIONS -
-  // defaults to the first option so the dropdown always has a valid value.
-  const [newAliasSymbol, setNewAliasSymbol] = useState(SYMBOL_OPTIONS[0])
+  // Which symbol the new alias should map to - defaults to the fallback's
+  // first entry so the dropdown always has a valid value before config
+  // loads; reset to the real watchlist's first symbol once it does (see
+  // the load effect below), so this never points at a symbol that isn't
+  // actually on the watchlist.
+  const [newAliasSymbol, setNewAliasSymbol] = useState(FALLBACK_SYMBOL_OPTIONS[0])
 
-  // Loads the current keyword config from the backend whenever the drawer opens.
+  // The symbols the alias dropdown should actually offer - derived from
+  // the loaded watchlist (so adding/removing a watchlist group updates
+  // this automatically) rather than a hardcoded list that would silently
+  // go stale, as the old SYMBOL_OPTIONS constant did when BDL was added.
+  const symbolOptions = config ? config.watchlist.map((g) => g.symbol) : FALLBACK_SYMBOL_OPTIONS
+
+  // Loads the current keyword config from the backend whenever the drawer
+  // opens, and points the alias-symbol dropdown at that config's first
+  // real watchlist symbol.
   useEffect(() => {
     if (!open) return
     setError(null)
     setMessage(null)
     eventWatcherKeywordsApi
       .get()
-      .then(setConfig)
+      .then((c) => {
+        setConfig(c)
+        if (c.watchlist.length > 0) setNewAliasSymbol(c.watchlist[0].symbol)
+      })
       .catch((err) => setError(err.message))
   }, [open])
 
@@ -294,7 +308,7 @@ export default function KeywordDrawer({ open, onClose }: KeywordDrawerProps) {
                     onChange={(e) => setNewAliasSymbol(e.target.value)}
                     className="rounded-[7px] border border-gray-300 px-2 py-1.5 text-xs text-gray-700"
                   >
-                    {SYMBOL_OPTIONS.map((s) => (
+                    {symbolOptions.map((s) => (
                       <option key={s} value={s}>
                         {s}
                       </option>
