@@ -64,3 +64,16 @@ def _write_cache(yearly_rates):
             json.dump({"timestamp": datetime.now().isoformat(), "yearly_rates": yearly_rates}, f)
     except Exception:
         pass
+
+
+def deflate_equity(dates, equity, yearly_rates):
+    """Converts a nominal equity curve to real (inflation-adjusted) terms,
+    using each calendar year's actual India CPI inflation rate rather than
+    one flat assumed rate - years without published data yet fall back to
+    the latest known year's rate. Compounds daily within each year."""
+    latest_known_rate = yearly_rates[max(yearly_rates)]
+    daily_pct = dates.dt.year.map(lambda year: yearly_rates.get(year, latest_known_rate))
+    daily_factor = (1 + daily_pct / 100) ** (1 / 365.25)
+    deflator = daily_factor.cumprod()
+    deflator = deflator / deflator.iloc[0]
+    return equity / deflator

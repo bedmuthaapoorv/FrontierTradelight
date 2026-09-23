@@ -79,10 +79,14 @@ EFFECTIVE_CONCURRENCY = FETCH_WORKERS * 2
 STAGGER_SECONDS = (0.3, 1.2)
 
 
+# Number of calendar months a date range spans - used to estimate how many
+# monthly NSE API chunks a fetch will need.
 def _month_span(from_date, to_date):
     return (to_date.year - from_date.year) * 12 + (to_date.month - from_date.month) + 1
 
 
+# Pre-flight check: how many stocks still need fetching and roughly how
+# long a run over this date range will take, without fetching anything.
 def estimate_runtime(start_date, end_date, limit_per_sector=50, warmup_days=WARMUP_DAYS):
     """Pre-flight estimate: how many universe stocks still need fetching from
     NSE for this date range, and a rough time range for the run. Does not
@@ -115,12 +119,16 @@ def estimate_runtime(start_date, end_date, limit_per_sector=50, warmup_days=WARM
     }
 
 
+# Builds the on-disk cache filename for one symbol's fetched history over
+# a given date range.
 def _cache_path(symbol, from_date, to_date):
     os.makedirs(CACHE_DIR, exist_ok=True)
     key = f"{symbol}_{from_date.isoformat()}_{to_date.isoformat()}.csv"
     return os.path.join(CACHE_DIR, key)
 
 
+# Removes duplicate-date rows NSE occasionally returns at chunk
+# boundaries, keeping the real bar and dropping the placeholder one.
 def _dedupe_same_day_rows(df):
     """jugaad-data's underlying NSE source occasionally returns two rows for
     the same calendar date at a chunk boundary: one genuine OHLCV bar (real
@@ -139,6 +147,8 @@ def _dedupe_same_day_rows(df):
     return df.sort_index()
 
 
+# Back-adjusts prices for unadjusted stock splits/bonus issues, so a split
+# doesn't look like a fabricated overnight crash to every rule/exit check.
 def _adjust_for_splits_and_bonuses(df, threshold=0.65):
     """Detect and back-adjust for unadjusted stock splits / bonus issues.
 
@@ -172,6 +182,7 @@ def _adjust_for_splits_and_bonuses(df, threshold=0.65):
     return df
 
 
+# Fetches (or loads from cache) one symbol's cleaned-up OHLCV history.
 def _load_symbol_history(symbol, from_date, to_date):
     """Fetch (or load cached) daily history for a symbol, normalized to
     lowercase OHLCV columns indexed by date, ascending, deduplicated, and
@@ -212,6 +223,7 @@ def _load_symbol_history(symbol, from_date, to_date):
     return df
 
 
+# Fetches (or loads from cache) history for the whole universe concurrently.
 def load_universe_history(universe, start_date, end_date, warmup_days=WARMUP_DAYS, max_workers=FETCH_WORKERS):
     """Fetch (or load cached) history for every symbol in the universe,
     covering [start_date - warmup_days, end_date]. Fetches concurrently
@@ -236,6 +248,8 @@ def load_universe_history(universe, start_date, end_date, warmup_days=WARMUP_DAY
     return data
 
 
+# Opens a trade the day after a signal fires and resolves its exit via
+# generated_exit_strategy.py, force-closing at range end if nothing fires.
 def _open_and_resolve_trade(symbol, full_df, signal_day, end_date, closeness_score, active_strategy=None):
     """Enter at the next trading day's open after signal_day, then hand off
     to generated_exit_strategy.resolve_exit() to decide when to exit.
@@ -298,6 +312,8 @@ def _open_and_resolve_trade(symbol, full_df, signal_day, end_date, closeness_sco
 NEAR_MISS_HOLDING_DAYS = 20
 
 
+# Strips the specific numbers out of a failure message so near-misses
+# group by rule instead of each getting its own one-off label.
 def _normalize_rule_label(failed_rule):
     """generated_rules.py's failure messages embed the specific value that
     failed (e.g. "RSI outside range (55-75): 76.39", "Sector rank 14 not in
@@ -310,6 +326,8 @@ def _normalize_rule_label(failed_rule):
     return normalized or failed_rule
 
 
+# What a stock did over a fixed holding period after a given day - used to
+# score near-misses, since they never opened a real trade with exit logic.
 def _forward_return_pct(full_df, signal_day, holding_days=NEAR_MISS_HOLDING_DAYS):
     """What a stock did after a given day, on the same next-day-open entry
     convention as a real trade - used to score near-misses (see below)
@@ -328,6 +346,8 @@ def _forward_return_pct(full_df, signal_day, holding_days=NEAR_MISS_HOLDING_DAYS
     return (exit_price - entry_price) / entry_price * 100
 
 
+# Core simulation loop: walks the date range day by day, evaluates every
+# stock with the live strategy, opens trades on passes, and tracks near-misses.
 def run_backtest(start_date, end_date, limit_per_sector=50, progress_callback=None):
     """Run the backtest. Returns (trades_df, summary_df, near_misses_df).
 
@@ -434,6 +454,8 @@ def run_backtest(start_date, end_date, limit_per_sector=50, progress_callback=No
     return trades_df, summary_df, near_misses_df
 
 
+# Replays run_backtest()'s trade list through a capital-constrained
+# portfolio - deciding which signals actually got funded and compounding equity.
 def simulate_portfolio(trades_df, initial_capital=100000.0, max_concurrent_positions=10):
     """
     Simulates a real, capital-constrained portfolio on top of the already
@@ -523,6 +545,7 @@ def simulate_portfolio(trades_df, initial_capital=100000.0, max_concurrent_posit
     return portfolio_df, trades
 
 
+# Buckets trades by ClosenessScore and reports win rate/profit per bucket.
 def summarize_trades(trades_df):
     """Bucket trades by ClosenessScore and report win rate / profit per bucket."""
     columns = ["ScoreBucket", "Trades", "WinRatePct", "MeanProfitRs", "MedianProfitRs", "TotalProfitRs"]
@@ -545,10 +568,13 @@ def summarize_trades(trades_df):
     return summary
 
 
+# Parses a "YYYY-MM-DD" CLI argument into a date object.
 def _parse_date(s):
     return datetime.datetime.strptime(s, "%Y-%m-%d").date()
 
 
+# CLI entry point: parses args, runs the backtest, simulates the portfolio,
+# writes all output CSVs, and records which strategy this run belongs to.
 def main():
     parser = argparse.ArgumentParser(
         description="Backtest the current generated_rules.py strategy using generated_exit_strategy.py for exits."

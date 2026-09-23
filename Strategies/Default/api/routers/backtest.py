@@ -1,11 +1,9 @@
-"""Launch/poll/stop a backtest.py subprocess and serve its results - the
-FastAPI equivalent of backtest_runner.launch_backtest / show_backtest_progress,
-reusing backtest_runner.py's pure helpers verbatim (_latest_progress,
-_format_eta, compute_metrics, read_backtest_meta,
-record_stats_if_benchmark) and tabs/backtest.py's pure inflation-adjustment
-helpers, so the numbers can never diverge from the Streamlit app. The job
-is tracked in a module-level dict instead of st.session_state - fine for
-this single-user local tool, where only one backtest ever runs at a time.
+"""Launch/poll/stop a backtest.py subprocess and serve its results, reusing
+backtest_runner.py's pure helpers (_latest_progress, _format_eta,
+compute_metrics, read_backtest_meta, record_stats_if_benchmark) and
+inflation_utils.deflate_equity so the numbers are computed identically
+everywhere. The job is tracked in a module-level dict - fine for this
+single-user local tool, where only one backtest ever runs at a time.
 """
 
 import json
@@ -34,8 +32,7 @@ from constants import (
     BACKTEST_PORTFOLIO_PATH,
     BACKTEST_TRADES_PATH,
 )
-from tabs.backtest import deflate_equity
-from ui_helpers import read_text
+from inflation_utils import deflate_equity
 
 router = APIRouter(prefix="/backtest")
 
@@ -49,6 +46,8 @@ class RunRequest(BaseModel):
     max_positions: int
 
 
+# Launches backtest.py as a subprocess with the given date range/capital/
+# slots; refuses to start a second one while one is already running.
 @router.post("/run")
 def run_backtest(body: RunRequest):
     if _job["process"] is not None and _job["process"].poll() is None:
@@ -73,6 +72,7 @@ def run_backtest(body: RunRequest):
     return {"status": "started"}
 
 
+# Terminates the running backtest subprocess, if any.
 @router.post("/stop")
 def stop_backtest():
     process = _job["process"]
@@ -82,13 +82,20 @@ def stop_backtest():
     return {"status": "stopped"}
 
 
+# Polls the running backtest's log for progress/ETA; once it exits, clears
+# the job and records the result to the Stats leaderboard if it matches
+# the benchmark date range.
 @router.get("/status")
 def backtest_status():
     process = _job["process"]
     if process is None:
         return {"running": False}
 
-    log_tail = read_text(BACKTEST_LOG_PATH)[-4000:] if os.path.exists(BACKTEST_LOG_PATH) else ""
+    if os.path.exists(BACKTEST_LOG_PATH):
+        with open(BACKTEST_LOG_PATH, "r", encoding="utf-8") as f:
+            log_tail = f.read()[-4000:]
+    else:
+        log_tail = ""
     progress = _latest_progress(log_tail)
     day = total = None
     eta_seconds = None
@@ -121,6 +128,8 @@ def backtest_status():
     return result
 
 
+# Returns the last completed backtest's headline numbers (CAGR, drawdown,
+# Sharpe-based composite score, funded/skipped trade counts, meta).
 @router.get("/result")
 def backtest_result():
     if not os.path.exists(BACKTEST_PORTFOLIO_PATH):
@@ -162,6 +171,8 @@ def backtest_result():
     }
 
 
+# Returns the equity curve for charting, optionally alongside an
+# inflation-adjusted series and/or a Nifty 50 benchmark series.
 @router.get("/chart")
 def backtest_chart(inflation: bool = False, nifty: bool = False):
     if not os.path.exists(BACKTEST_PORTFOLIO_PATH):
@@ -203,6 +214,8 @@ def backtest_chart(inflation: bool = False, nifty: bool = False):
     }
 
 
+# Returns the real daily equity path split by calendar year, for the Deep
+# Dive tab's client-side year-range analysis.
 @router.get("/portfolio-by-year")
 def backtest_portfolio_by_year():
     """Daily equity path for each calendar year in the last backtest, plus
@@ -234,6 +247,8 @@ def backtest_portfolio_by_year():
     }
 
 
+# Returns each calendar year's start/end equity and return % - the
+# summarized (non-daily) year-by-year view.
 @router.get("/yearly")
 def backtest_yearly():
     if not os.path.exists(BACKTEST_PORTFOLIO_PATH):

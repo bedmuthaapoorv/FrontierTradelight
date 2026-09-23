@@ -1,24 +1,17 @@
-"""Shared logic for launching a backtest.py subprocess, polling its
-progress, and recording results into the Stats tab's CSV - used by both
-tabs/backtest.py (user-chosen date range) and tabs/stats.py (the fixed
-benchmark range), so both go through the exact same launch/poll/record
-path instead of duplicating it, and only one backtest can ever be running
-at a time regardless of which tab started it (tracked via the same
-st.session_state keys)."""
+"""Shared logic for polling a backtest.py subprocess's progress and
+recording its results into the Stats tab's CSV - used by
+api/routers/backtest.py, which launches and tracks the subprocess itself
+(in a module-level dict; this app is single-user/single-backtest-at-a-time
+so that's sufficient) and calls into these pure helpers so the numbers are
+computed identically everywhere."""
 
 import json
 import os
 import re
-import subprocess
-import sys
-import time
 
 import pandas as pd
-import streamlit as st
 
 from constants import (
-    APP_DIR,
-    BACKTEST_LOG_PATH,
     BACKTEST_META_PATH,
     BACKTEST_PORTFOLIO_PATH,
     BACKTEST_TRADES_PATH,
@@ -27,30 +20,6 @@ from constants import (
     STRATEGY_STATS_PATH,
 )
 from stats_utils import upsert_strategy_stats
-from ui_helpers import read_text
-
-
-def launch_backtest(start_date, end_date, initial_capital, max_positions):
-    """Starts backtest.py as a subprocess and stores it in session_state
-    for show_backtest_progress() to track. Caller is responsible for
-    calling st.rerun() afterward."""
-    args = [
-        "--start", start_date.isoformat(),
-        "--end", end_date.isoformat(),
-        "--initial-capital", str(initial_capital),
-        "--max-positions", str(int(max_positions)),
-    ]
-
-    with open(BACKTEST_LOG_PATH, "w", encoding="utf-8") as log_file:
-        process = subprocess.Popen(
-            [sys.executable, "backtest.py", *args],
-            cwd=APP_DIR,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-        )
-    st.session_state.backtest_process = process
-    st.session_state.backtest_running = True
-    st.session_state.backtest_start_time = time.time()
 
 
 def read_backtest_meta():
@@ -119,9 +88,9 @@ def record_stats_if_benchmark():
     just produced by a run over the exact benchmark date range - so the
     leaderboard only ever holds apples-to-apples comparisons, never a
     stray shorter/longer test run silently mixed in. Called once, right
-    when a backtest actually finishes (see show_backtest_progress) - not
-    on every page view, so the table updates exactly when a benchmark
-    backtest runs and never otherwise.
+    when a backtest actually finishes (see api/routers/backtest.py's
+    polling endpoint) - not on every page view, so the table updates
+    exactly when a benchmark backtest runs and never otherwise.
 
     Returns (recorded: bool, reason: str) so the caller can tell the user
     what happened - "recorded", "range mismatch", or "no strategy name"."""
@@ -184,59 +153,3 @@ def _format_eta(seconds):
     if minutes == 0:
         return f"{secs}s"
     return f"{minutes}m {secs}s"
-
-
-@st.fragment(run_every=2)
-def show_backtest_progress():
-    """Polls the running backtest's log file and process status every 2s,
-    without blocking the rest of the page (so a Stop button stays
-    clickable). Shared by the Backtest tab and the Stats tab's Benchmark
-    Backtest button - whichever one launched the run, this is where
-    Stats-tab recording actually happens, exactly once, right as the
-    process exits successfully."""
-    process = st.session_state.get("backtest_process")
-    if process is None:
-        return
-
-    if os.path.exists(BACKTEST_LOG_PATH):
-        log_tail = read_text(BACKTEST_LOG_PATH)[-4000:]
-        progress = _latest_progress(log_tail)
-
-        if progress is None:
-            st.info("Fetching/preparing data... (per-day progress starts once this completes)")
-        else:
-            day_num, total_days, day_date = progress
-            fraction = day_num / total_days if total_days else 0.0
-
-            start_time = st.session_state.get("backtest_start_time")
-            eta_text = ""
-            if start_time and day_num > 0:
-                elapsed = time.time() - start_time
-                seconds_per_day = elapsed / day_num
-                remaining_days = max(0, total_days - day_num)
-                eta_text = f" - est. {_format_eta(seconds_per_day * remaining_days)} remaining"
-
-            st.progress(
-                fraction,
-                text=f"Evaluating day {day_num}/{total_days} ({day_date}){eta_text}",
-            )
-
-        with st.expander("Raw log"):
-            st.code(log_tail or "Starting...")
-
-    if process.poll() is not None:
-        st.session_state.backtest_running = False
-        if process.returncode == 0:
-            st.success("Backtest complete. See results below.")
-            recorded, reason = record_stats_if_benchmark()
-            if recorded:
-                st.success("Stats tab updated (this run matched the benchmark range).")
-            elif reason == "range mismatch":
-                st.info(
-                    "Stats tab NOT updated - this run wasn't over the benchmark range "
-                    f"({BENCHMARK_START_DATE} to {BENCHMARK_END_DATE}). Use \"Benchmark "
-                    "backtest\" on the Stats tab for a comparable result."
-                )
-        else:
-            st.error(f"backtest.py exited with code {process.returncode}.")
-        st.rerun()
