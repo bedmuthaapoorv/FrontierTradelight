@@ -81,6 +81,14 @@ DEFAULT_WATCHLIST: dict[str, list[str]] = {
     "COCHINSHIP": ["cochin shipyard"],
     "MAZDOCK": ["mazagon dock", "mazagon dock shipbuilders"],
     "GRSE": ["garden reach", "garden reach shipbuilders"],
+    # Not a shipbuilder - added for MoD supply-contract announcements (see
+    # DEFAULT_EVENT_KEYWORDS' "contract with" etc. below), the first
+    # non-commissioning event type this watcher tracks. Real example:
+    # "MoD signs Rs 811 crore contract with BDL for 160 Satellite Smart
+    # Anti Airfield Weapons for IAF" named BDL by its NSE ticker directly
+    # in the headline, not its full name - "bdl" is included as a fragment
+    # for that reason, even though it's a short, generic-looking acronym.
+    "BDL": ["bharat dynamics", "bdl"],
 }
 
 # PIB's actual commissioning/induction headlines usually name the VESSEL or
@@ -121,6 +129,19 @@ DEFAULT_EVENT_KEYWORDS = [
     "keel-laying",
     "steel cutting",
     "launch of",
+    # A second, independent event type: MoD signing a supply/production
+    # contract with a watchlisted company - a real revenue-driving catalyst
+    # distinct from a vessel commissioning, e.g. "MoD signs Rs 811 crore
+    # contract with BDL for 160 Satellite Smart Anti Airfield Weapons for
+    # IAF" (BDL +1.3% the next trading day). "contract with" is the phrase
+    # that actually survives PIB's headline template (the deal value sits
+    # between "signs" and "contract", so "signs contract" as one phrase
+    # would NOT have matched this real title) - kept as a substring match
+    # exactly like every other keyword here (see _match_keyword).
+    "contract with",
+    "signs contract",
+    "inks contract",
+    "contract worth",
 ]
 
 COLUMNS = ["Date", "Title", "Link", "MatchedKeyword", "MatchedSymbols", "Source"]
