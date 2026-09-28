@@ -1,5 +1,7 @@
 import json
 import os
+import random
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
@@ -10,6 +12,15 @@ from nse_utils import fetch_stock_history
 
 CACHE_FILE = UNIVERSE_CACHE_PATH
 CACHE_EXPIRY_DAYS = 1
+
+# jugaad-data hits NSE's raw historical API directly, which throttles/
+# bot-detects under sustained concurrent load - staggering requests (same
+# pattern stock_screener.py uses for its own daily fetch) cuts down on
+# correlated failures where a burst of simultaneous requests gets an entire
+# window rate-limited at once, so even per-request retries inside
+# fetch_stock_history keep failing until the window passes.
+FETCH_WORKERS = 5
+STAGGER_SECONDS = (0.1, 0.5)
 
 def fetch_nifty_500():
     """Fetches the Nifty 500 constituents from NSE.
@@ -30,16 +41,34 @@ def fetch_nifty_500():
         print(f"Error fetching Nifty 500 list: {e}")
         return None
 
-def fetch_symbol_return(symbol, from_date, to_date):
-    """Fetches 6-month history for a single symbol and returns its % return."""
-    df = fetch_stock_history(symbol=symbol, from_date=from_date, to_date=to_date, series="EQ")
-    if df is None or df.empty or len(df) <= 10:
-        return None
+def fetch_symbol_return(symbol, from_date, to_date, retries=3, backoff_seconds=3):
+    """Fetches 6-month history for a single symbol and returns its % return.
 
-    df = df.sort_values(by="DATE")
-    first_close = float(df["CLOSE"].iloc[0])
-    last_close = float(df["CLOSE"].iloc[-1])
-    return float((last_close - first_close) / first_close * 100)
+    Staggers its own start (see STAGGER_SECONDS) and retries with its own
+    backoff on top of fetch_stock_history's internal retries - a burst of
+    ~500 concurrent requests can get an entire time window rate-limited at
+    once, so a failure here often means "try again after a longer pause,"
+    not "this symbol is broken." Returns None only after every attempt is
+    exhausted, same as before - callers already treat None as "skip this
+    symbol," so this doesn't change that contract, just makes it less
+    likely to fire spuriously."""
+    time.sleep(random.uniform(*STAGGER_SECONDS))
+    last_error = None
+    for attempt in range(retries):
+        try:
+            df = fetch_stock_history(symbol=symbol, from_date=from_date, to_date=to_date, series="EQ")
+            if df is None or df.empty or len(df) <= 10:
+                return None
+            df = df.sort_values(by="DATE")
+            first_close = float(df["CLOSE"].iloc[0])
+            last_close = float(df["CLOSE"].iloc[-1])
+            return float((last_close - first_close) / first_close * 100)
+        except Exception as e:
+            last_error = e
+            if attempt < retries - 1:
+                time.sleep(backoff_seconds * (attempt + 1))
+    print(f"Giving up on {symbol} after {retries} attempts: {last_error}")
+    return None
 
 def get_top_stocks_by_sector(limit_per_sector=50):
     """
@@ -53,7 +82,12 @@ def get_top_stocks_by_sector(limit_per_sector=50):
                 cached_data = json.load(f)
                 cache_date = datetime.fromisoformat(cached_data['timestamp'])
                 if datetime.now() - cache_date < timedelta(days=CACHE_EXPIRY_DAYS):
-                    print("Loaded stock universe from cache.")
+                    fetched = cached_data.get("fetched_count")
+                    requested = cached_data.get("requested_count")
+                    if fetched is not None and requested:
+                        print(f"Loaded stock universe from cache ({fetched}/{requested} Nifty 500 stocks fetched).")
+                    else:
+                        print("Loaded stock universe from cache.")
                     return cached_data['universe']
         except Exception as e:
             print(f"Error reading cache, fetching fresh data: {e}")
@@ -76,7 +110,9 @@ def get_top_stocks_by_sector(limit_per_sector=50):
         for _, row in nifty500_df.iterrows()
     }
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    failed_symbols = []
+
+    with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as executor:
         future_to_symbol = {
             executor.submit(fetch_symbol_return, symbol, from_date, to_date): symbol
             for symbol in tickers_list
@@ -92,9 +128,49 @@ def get_top_stocks_by_sector(limit_per_sector=50):
                         "Sector": symbol_info[symbol]["Sector"],
                         "Return": pct_return
                     })
+                else:
+                    failed_symbols.append(symbol)
             except Exception as e:
                 # Some tickers might fail or have no data
                 print(f"Failed to fetch {symbol}: {e}")
+                failed_symbols.append(symbol)
+
+    # A first concurrent pass can lose a lot of symbols at once if NSE
+    # throttles the whole burst together (fetch_symbol_return's own
+    # retries/backoff happen too close together in time to help with a
+    # window-wide block). Retry failures sequentially, one at a time with a
+    # real pause between each, well after the burst that likely caused the
+    # block has passed - slower, but recovers most of them in practice.
+    if failed_symbols:
+        print(f"Retrying {len(failed_symbols)} symbol(s) sequentially after the concurrent pass...")
+        still_failed = []
+        for symbol in failed_symbols:
+            time.sleep(1.0)
+            pct_return = fetch_symbol_return(symbol, from_date, to_date, retries=2, backoff_seconds=5)
+            if pct_return is not None:
+                performance.append({
+                    "Ticker": symbol,
+                    "Name": symbol_info[symbol]["Name"],
+                    "Sector": symbol_info[symbol]["Sector"],
+                    "Return": pct_return
+                })
+            else:
+                still_failed.append(symbol)
+        failed_symbols = still_failed
+
+    success_count = len(performance)
+    total_count = len(tickers_list)
+    success_rate = success_count / total_count * 100 if total_count else 0
+    print(f"Fetched {success_count}/{total_count} Nifty 500 stocks successfully ({success_rate:.0f}%).")
+    if success_rate < 70:
+        print(
+            f"WARNING: only {success_rate:.0f}% of the Nifty 500 universe was fetched - "
+            "sector strength and market breadth are being computed over a smaller, "
+            "potentially unrepresentative sample. This usually means NSE throttled "
+            "the fetch; re-running later (or with fewer concurrent workers) may help. "
+            f"{len(failed_symbols)} symbol(s) still failing: {failed_symbols[:20]}"
+            + (" ..." if len(failed_symbols) > 20 else "")
+        )
 
     perf_df = pd.DataFrame(performance)
 
@@ -115,12 +191,15 @@ def get_top_stocks_by_sector(limit_per_sector=50):
                 "Sector": row['Sector']
             }
 
-    # Save to cache
+    # Save to cache, including the fetch success rate so a small/stale-looking
+    # universe can be diagnosed later without re-running this whole fetch.
     try:
         with open(CACHE_FILE, 'w', encoding='utf-8') as f:
             json.dump({
                 "timestamp": datetime.now().isoformat(),
-                "universe": top_stocks
+                "universe": top_stocks,
+                "fetched_count": success_count,
+                "requested_count": total_count,
             }, f, indent=4)
         print("Saved fresh stock universe to cache.")
     except Exception as e:
