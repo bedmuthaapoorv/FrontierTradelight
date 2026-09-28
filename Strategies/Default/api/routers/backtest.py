@@ -196,6 +196,9 @@ def backtest_chart(inflation: bool = False, nifty: bool = False):
     nifty_series = None
     if nifty:
         initial_capital = _job["initial_capital"] or 100000.0
+        if os.path.exists(BACKTEST_META_PATH):
+            with open(BACKTEST_META_PATH, "r", encoding="utf-8") as f:
+                initial_capital = json.load(f).get("initial_capital", initial_capital)
         start_date = portfolio_df["Date"].min().date()
         end_date = portfolio_df["Date"].max().date()
         benchmark_df = nifty_utils.build_nifty_50_benchmark(start_date, end_date, initial_capital)

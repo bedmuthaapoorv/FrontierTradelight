@@ -1,14 +1,14 @@
 """Builds a Nifty 50 benchmark curve to compare the backtest's portfolio
 equity against.
 
-NSE's actual index-history endpoints (both the archives.nseindia.com and
-niftyindices.com variants jugaad_data wraps) return bot-blocked/empty
-responses from this network - same class of block as the live-quote API
-(see sell_screener.py's docstring). Instead of the real index level, this
-builds an equal-weighted proxy from the Nifty 50 constituents' own daily
-closes (fetched via the same fetch_stock_history() used everywhere else in
-this project), normalized to start at the portfolio's initial capital so
-the two curves are directly comparable on the same chart.
+Fetches the real Nifty 50 index level itself (via jugaad_data's index_df,
+which wraps NSE's archives.nseindia.com index-history endpoint) and treats
+it exactly like a single stock: normalize its close to 1.0 at the first
+available date, scale by the portfolio's initial capital. This avoids the
+survivorship bias and equal-weight distortion of building a proxy out of
+today's Nifty 50 constituent list applied retroactively (real historical
+constituents/weights aren't reconstructed here - we just use the published
+index level directly).
 """
 
 import json
@@ -16,60 +16,41 @@ import os
 from datetime import datetime, timedelta
 
 import pandas as pd
+from jugaad_data.nse import index_df
 
 from constants import NIFTY50_CACHE_PATH
-from nse_utils import fetch_stock_history
 
 CACHE_PATH = NIFTY50_CACHE_PATH
 CACHE_EXPIRY_DAYS = 1
-NIFTY_50_LIST_URL = "https://archives.nseindia.com/content/indices/ind_nifty50list.csv"
-
-
-def _fetch_nifty_50_symbols():
-    try:
-        return pd.read_csv(NIFTY_50_LIST_URL)["Symbol"].tolist()
-    except Exception:
-        return None
+INDEX_SYMBOL = "NIFTY 50"
 
 
 def build_nifty_50_benchmark(start_date, end_date, initial_capital):
     """Returns a DataFrame (Date, Equity) tracking what initial_capital
-    would be worth if spread equally across the Nifty 50 constituents on
-    start_date, or None if it couldn't be built (list/data unavailable)."""
+    invested in the real Nifty 50 index on start_date would be worth, or
+    None if it couldn't be fetched."""
     cached = _read_cache(start_date, end_date, initial_capital)
     if cached is not None:
         return cached
 
-    symbols = _fetch_nifty_50_symbols()
-    if not symbols:
+    try:
+        df = index_df(symbol=INDEX_SYMBOL, from_date=start_date, to_date=end_date)
+    except Exception:
         return None
 
-    closes = {}
-    for symbol in symbols:
-        try:
-            df = fetch_stock_history(symbol, from_date=start_date, to_date=end_date, series="EQ")
-            if df is None or df.empty:
-                continue
-            df = df.sort_values("DATE").set_index("DATE")
-            df.index = pd.to_datetime(df.index).normalize()
-            # jugaad_data's chunked monthly fetches can overlap at month
-            # boundaries, producing duplicate dates - keep the last value.
-            series = df["CLOSE"]
-            closes[symbol] = series[~series.index.duplicated(keep="last")]
-        except Exception:
-            continue
-
-    if not closes:
+    if df is None or df.empty:
         return None
 
-    price_df = pd.DataFrame(closes).sort_index().ffill().dropna(how="all")
-    if price_df.empty:
+    df = df.sort_values("HistoricalDate").set_index("HistoricalDate")
+    df.index = pd.to_datetime(df.index).normalize()
+    close = df["CLOSE"]
+    # jugaad_data's chunked fetches can overlap at boundaries, producing
+    # duplicate dates - keep the last value.
+    close = close[~close.index.duplicated(keep="last")].dropna()
+    if close.empty:
         return None
 
-    # Equal-weight: normalize each stock to 1.0 at its first available
-    # price, average across stocks each day, scale by initial_capital.
-    normalized = price_df / price_df.iloc[0]
-    index_curve = normalized.mean(axis=1) * initial_capital
+    index_curve = (close / close.iloc[0]) * initial_capital
 
     result = pd.DataFrame({"Date": index_curve.index, "Equity": index_curve.values})
     _write_cache(result, start_date, end_date, initial_capital)

@@ -21,6 +21,8 @@ const HEADER_HEIGHT_PX = 37
 const PAGINATION_BAR_HEIGHT_PX = 44
 const BOTTOM_MARGIN_PX = 24 // breathing room so the table doesn't touch the page edge
 
+type SortDirection = 'asc' | 'desc'
+
 export default function Results() {
   const [data, setData] = useState<ResultsResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -30,6 +32,8 @@ export default function Results() {
   const [canScrollRight, setCanScrollRight] = useState(false)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
+  const [sortColumn, setSortColumn] = useState<string | null>(null)
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc')
   const scrollRef = useRef<HTMLDivElement>(null)
   const tableWrapperRef = useRef<HTMLDivElement>(null)
 
@@ -93,7 +97,20 @@ export default function Results() {
 
   useEffect(() => {
     setPage(1)
-  }, [passedOnly, data])
+  }, [passedOnly, data, sortColumn, sortDirection])
+
+  // Cycles a column through unsorted -> ascending -> descending -> unsorted
+  // on repeated clicks, same convention as most sortable tables.
+  const handleSort = (col: string) => {
+    if (sortColumn !== col) {
+      setSortColumn(col)
+      setSortDirection('asc')
+    } else if (sortDirection === 'asc') {
+      setSortDirection('desc')
+    } else {
+      setSortColumn(null)
+    }
+  }
 
   if (error) {
     return (
@@ -112,8 +129,29 @@ export default function Results() {
   }
 
   const hasPassedColumn = data.columns.includes('Passed')
-  const rows = hasPassedColumn && passedOnly ? data.rows.filter((r) => r.Passed === true) : data.rows
+  const filteredRows = hasPassedColumn && passedOnly ? data.rows.filter((r) => r.Passed === true) : data.rows
   const passedCount = hasPassedColumn ? data.rows.filter((r) => r.Passed === true).length : 0
+
+  const rows = sortColumn
+    ? [...filteredRows].sort((a, b) => {
+        const av = a[sortColumn]
+        const bv = b[sortColumn]
+        // Nulls always sort to the end, regardless of direction, so sorting
+        // never buries real values behind a page of blanks.
+        if (av === null || av === undefined) return bv === null || bv === undefined ? 0 : 1
+        if (bv === null || bv === undefined) return -1
+
+        let cmp: number
+        if (typeof av === 'number' && typeof bv === 'number') {
+          cmp = av - bv
+        } else if (typeof av === 'boolean' && typeof bv === 'boolean') {
+          cmp = Number(av) - Number(bv)
+        } else {
+          cmp = String(av).localeCompare(String(bv))
+        }
+        return sortDirection === 'asc' ? cmp : -cmp
+      })
+    : filteredRows
 
   const totalPages = Math.max(1, Math.ceil(rows.length / pageSize))
   const currentPage = Math.min(page, totalPages)
@@ -189,18 +227,31 @@ export default function Results() {
                 <table className="w-full border-separate border-spacing-0" style={{ minWidth: `${Math.max(700, data.columns.length * 130)}px` }}>
                   <thead>
                     <tr className="bg-[#FAFAFB]">
-                      {data.columns.map((col) => (
-                        <th
-                          key={col}
-                          className={`sticky top-0 whitespace-nowrap border-b border-gray-100 px-3.5 py-2.5 text-[10.5px] font-bold uppercase tracking-wide text-gray-400 ${
-                            col === 'Symbol'
-                              ? 'left-0 z-20 bg-[#FAFAFB] text-left'
-                              : `z-10 bg-[#FAFAFB] ${typeof rows[0]?.[col] === 'number' ? 'text-right' : 'text-left'}`
-                          }`}
-                        >
-                          {col}
-                        </th>
-                      ))}
+                      {data.columns.map((col) => {
+                        const isNumericCol = typeof rows[0]?.[col] === 'number'
+                        const isSorted = sortColumn === col
+                        return (
+                          <th
+                            key={col}
+                            onClick={() => handleSort(col)}
+                            aria-sort={isSorted ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}
+                            className={`sticky top-0 cursor-pointer select-none whitespace-nowrap border-b border-gray-100 px-3.5 py-2.5 text-[10.5px] font-bold uppercase tracking-wide hover:text-gray-600 ${
+                              isSorted ? 'text-gray-600' : 'text-gray-400'
+                            } ${
+                              col === 'Symbol'
+                                ? 'left-0 z-20 bg-[#FAFAFB] text-left'
+                                : `z-10 bg-[#FAFAFB] ${isNumericCol ? 'text-right' : 'text-left'}`
+                            }`}
+                          >
+                            <span className={`inline-flex items-center gap-1 ${isNumericCol ? 'flex-row-reverse' : ''}`}>
+                              {col}
+                              <span className={`text-[9px] ${isSorted ? 'opacity-100' : 'opacity-30'}`}>
+                                {isSorted && sortDirection === 'desc' ? '▼' : '▲'}
+                              </span>
+                            </span>
+                          </th>
+                        )
+                      })}
                     </tr>
                   </thead>
                   <tbody>

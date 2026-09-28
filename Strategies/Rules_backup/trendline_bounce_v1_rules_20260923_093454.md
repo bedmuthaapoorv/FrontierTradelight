@@ -337,6 +337,8 @@ Return:
 - Current Price
 - Ideal Entry Price Low
 - Ideal Entry Price High
+- Ideal Exit Price
+- Swing Duration (Days)
 - Trendline Value (Today)
 - Trendline Slope (% per day)
 - Daily RSI(14)
@@ -353,15 +355,28 @@ Ideal Entry Price High = Close (today's signal close - the realistic
 worst-case fill, since the backtester itself enters at this exact close
 price).
 
+Ideal Exit Price = Ideal Entry Price Low + 2.5 * ATR(14) (an illustrative
+target matching the trailing-stop distance used by this entry's paired
+exit strategy - the actual exit has no fixed take-profit and lets the
+trailing stop run winners further, so this is a "reasonable swing target"
+for display, not a cap).
+
+Swing Duration (Days) = "5-40" (the Holding Period range from this
+strategy's metadata above - a real trade's actual exit day is whatever
+the ATR trailing stop / 30-day early-failure cut in exit_rules.md
+produces, this column is only the expected planning range for manual
+order placement).
+
 Notes:
 - Unlike Breakout Momentum v6's entry range (which spans UP TOWARD a
   ceiling being broken), this range spans from the ideal support-line
   fill UP TO today's actual close, because a bounce entry's best-case
   price is the line itself and its worst case is wherever price already
   closed today.
-- Do NOT use this band to change entry logic anywhere else (Mandatory
-  Filters, Ranking Rules, backtester) - it is a display-only suggestion
-  for manual order placement, same as in prior strategy versions.
+- Do NOT use this band, the Ideal Exit Price, or the Swing Duration to
+  change entry/exit logic anywhere else (Mandatory Filters, Ranking
+  Rules, backtester) - they are display-only suggestions for manual
+  order placement, same as in prior strategy versions.
 
 Sort:
 

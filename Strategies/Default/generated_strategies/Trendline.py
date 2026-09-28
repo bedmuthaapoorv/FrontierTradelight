@@ -108,6 +108,8 @@ def evaluate_stock(symbol, df, universe, sector_ranks, market_breadth):
             "Current Price": close.iloc[-1],
             "Ideal Entry Price Low": close.iloc[-1],
             "Ideal Entry Price High": close.iloc[-1] * 1.01,
+            "Ideal Exit Price": close.iloc[-1] + 2.5 * curr_atr,
+            "Swing Duration (Days)": "5-40",
             "Daily RSI(14)": curr_rsi,
             "Volume[-1]": vol.iloc[-1],
             "20D Average Volume": ma20_vol.iloc[-1],

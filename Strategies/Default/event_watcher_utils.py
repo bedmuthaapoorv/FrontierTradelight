@@ -34,6 +34,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import feedparser
 import pandas as pd
+import pandas_ta as ta
 import requests
 
 from constants import (
@@ -144,48 +145,122 @@ DEFAULT_EVENT_KEYWORDS = [
     "contract worth",
 ]
 
+# Coarse grouping so the signal/duration logic can reason about "what kind of
+# catalyst is this" instead of treating a keel-laying (years from revenue)
+# the same as a signed contract (revenue-driving now). Keyed by the exact
+# keyword strings in DEFAULT_EVENT_KEYWORDS/EVENT_KEYWORDS; a keyword added
+# later via the UI's keyword editor that isn't in this map falls back to
+# "other" in _event_type rather than raising - the taxonomy is a refinement
+# layer on top of matching, not a gate on it.
+KEYWORD_TO_EVENT_TYPE: dict[str, str] = {
+    "commission": "commissioning",
+    "commissioned": "commissioning",
+    "commissioning": "commissioning",
+    "induct": "commissioning",
+    "inducted": "commissioning",
+    "induction": "commissioning",
+    "handed over": "commissioning",
+    "handing over": "commissioning",
+    "delivered to indian navy": "commissioning",
+    "delivery of": "commissioning",
+    "keel laying": "construction_milestone",
+    "keel-laying": "construction_milestone",
+    "steel cutting": "construction_milestone",
+    "launch of": "construction_milestone",
+    "contract with": "contract_award",
+    "signs contract": "contract_award",
+    "inks contract": "contract_award",
+    "contract worth": "contract_award",
+}
+
+
+def _event_type(keyword: str | None) -> str:
+    """Coarse catalyst category for `keyword` (see KEYWORD_TO_EVENT_TYPE).
+    "other" for anything not in the map - e.g. a keyword added later via the
+    keyword-editor drawer that hasn't been classified yet - so matching
+    never breaks even when the taxonomy lags the keyword list."""
+    if not keyword:
+        return "other"
+    return KEYWORD_TO_EVENT_TYPE.get(keyword.strip().lower(), "other")
+
+
 COLUMNS = ["Date", "Title", "Link", "MatchedKeyword", "MatchedSymbols", "Source"]
 
-# Reference point for the BUY/HOLD/SELL heuristic below: Cochin Shipyard's
-# entire post-commissioning rally (23 Jul-26 Aug 2026) was ~11% - the one
-# real case this watcher is modeled on. Not a backtested threshold (this
-# watcher never feeds the backtester, see module docstring), just a rough
-# "has a comparable move already happened" read.
-SIGNAL_RALLY_ALREADY_PLAYED_OUT_PCT = 10.0
+# Below this many historical instances of an event_type, a prior (median CAR,
+# median duration) is withheld rather than shown - with 1-2 real observations
+# a "median" is just that one number wearing a stats term, and presenting it
+# as a calibrated estimate would be more misleading than showing nothing.
+MIN_SAMPLE_FOR_PRIOR = 5
+
 SIGNAL_CACHE_TTL = timedelta(hours=6)
 
 # In-memory only - a stale cached signal just means the tab shows a slightly
 # outdated read until it expires or the process restarts, never wrong data
 # written anywhere.
-_signal_cache: dict[str, tuple[datetime, str]] = {}
+_signal_cache: dict[str, tuple[datetime, dict]] = {}
 
 
-def _price_signal(symbols: list[str], event_date_str: str) -> str:
-    """BUY/HOLD/SELL for a matched announcement, based on how far the first
-    matched symbol has already moved since the event date.
+def _atr(df: pd.DataFrame, length: int = 14) -> float | None:
+    """Average True Range off a HIGH/LOW/CLOSE frame - same pandas_ta call as
+    generated_exit_strategy.py's _get_atr, used here to size a price move
+    against the stock's own recent volatility instead of a flat percentage
+    threshold (one stock's normal noise is another's breakout)."""
+    try:
+        atr_series = ta.atr(df["HIGH"], df["LOW"], df["CLOSE"], length=length)
+        value = atr_series.iloc[-1]
+        return float(value) if pd.notna(value) else None
+    except Exception:
+        return None
 
-    BUY  - up since the event, but by less than a Cochin-Shipyard-sized
-           rally - the move may still have room to run.
-    HOLD - flat or down since the event - the catalyst hasn't (yet) shown up
-           in price, or price data couldn't be read cleanly.
-    SELL - already up more than that reference rally - a historically
-           comparable move has likely already played out.
+
+def _price_signal(symbols: list[str], event_date_str: str, event_type: str = "other") -> dict:
+    """Composite signal for a matched announcement, based on how far the
+    first matched symbol has moved since the event date, sized against the
+    stock's own volatility and against how this event_type has historically
+    played out (once enough instances exist to say anything about that).
+
+    Returns a dict rather than a single BUY/HOLD/SELL label:
+      SignalLabel      - "Buy" / "Neutral" / "Fade" / "N/A"
+      SignalScore      - -100..100, the move-so-far z-score scaled and
+                         capped; more negative once the move already looks
+                         "played out" relative to the stock's own ATR
+      MoveSoFarPct     - raw % move from entry_close to current_close
+      MoveZScore       - MoveSoFarPct's underlying move in ATR units
+                         (None if ATR couldn't be computed)
+      PriorEventTypeCAR - median historical % move for this event_type
+                         across past matched events, or None below
+                         MIN_SAMPLE_FOR_PRIOR
+      PriorSampleSize  - how many past instances of this event_type that
+                         median is based on
+      SignalConfidence - "Low" / "Medium" / "High", from PriorSampleSize -
+                         a stand-in for "should you trust SignalScore", not
+                         a claim that the score itself is more precise
 
     This is a heuristic for a manual candidate list, not a validated rule -
     unlike rules.md/exit_rules.md, it has never been backtested."""
+    empty: dict = {
+        "SignalLabel": "N/A",
+        "SignalScore": None,
+        "MoveSoFarPct": None,
+        "MoveZScore": None,
+        "PriorEventTypeCAR": None,
+        "PriorSampleSize": 0,
+        "SignalConfidence": "Low",
+    }
     if not symbols:
-        return "N/A"
+        return dict(empty)
     symbol = symbols[0]
-    cache_key = f"{symbol}:{event_date_str}"
+    cache_key = f"{symbol}:{event_date_str}:{event_type}"
     cached = _signal_cache.get(cache_key)
     if cached and datetime.now(timezone.utc) - cached[0] < SIGNAL_CACHE_TTL:
-        return cached[1]
+        return dict(cached[1])
 
-    signal = "N/A"
+    result = dict(empty)
     try:
         event_ts = pd.to_datetime(event_date_str, utc=True, errors="coerce")
         if pd.isna(event_ts):
-            return signal
+            _signal_cache[cache_key] = (datetime.now(timezone.utc), dict(result))
+            return dict(result)
         event_date = event_ts.date()
         to_date = date.today()
         if event_date <= to_date:
@@ -204,20 +279,130 @@ def _price_signal(symbols: list[str], event_date_str: str) -> str:
                     if df.iloc[-1]["DATE"].date() == on_or_before_event.iloc[-1]["DATE"].date():
                         # No trading session has closed since the event yet -
                         # genuinely too early to read a move, not a data gap.
-                        signal = "HOLD"
+                        result["SignalLabel"] = "HOLD"
+                        result["MoveSoFarPct"] = 0.0
                     else:
                         pct_move = (current_close - entry_close) / entry_close * 100
-                        if pct_move >= SIGNAL_RALLY_ALREADY_PLAYED_OUT_PCT:
-                            signal = "SELL"
-                        elif pct_move > 0:
-                            signal = "BUY"
-                        else:
-                            signal = "HOLD"
-    except Exception:
-        signal = "N/A"
+                        result["MoveSoFarPct"] = pct_move
 
-    _signal_cache[cache_key] = (datetime.now(timezone.utc), signal)
-    return signal
+                        # ATR needs ~14 prior trading sessions to mean
+                        # anything - the -7-calendar-day window above (kept
+                        # narrow so a Saturday event date still lands on the
+                        # right entry close) isn't enough for that, so pull
+                        # a separate, wider lookback (~45 calendar days is
+                        # comfortably >14 trading sessions even across a
+                        # holiday-heavy stretch) just for the ATR input.
+                        atr_history = fetch_stock_history(
+                            symbol=symbol, from_date=event_date - timedelta(days=45), to_date=event_date, series="EQ"
+                        )
+                        atr_asof_entry = _atr(atr_history) if atr_history is not None and not atr_history.empty else None
+                        move_z = None
+                        if atr_asof_entry and atr_asof_entry > 0:
+                            move_z = (current_close - entry_close) / atr_asof_entry
+                            result["MoveZScore"] = move_z
+
+                        prior_car, prior_n = _event_type_prior_car(event_type)
+                        result["PriorEventTypeCAR"] = prior_car
+                        result["PriorSampleSize"] = prior_n
+                        result["SignalConfidence"] = _confidence_from_sample(prior_n)
+
+                        # Score is the move-so-far in ATR units, scaled to
+                        # +-100 and clipped - a move already several ATRs
+                        # above entry scores as SELL (likely played out), a
+                        # small move as BUY (room to run), regardless of what
+                        # raw % that happens to be for this particular stock.
+                        # Labels are kept to the existing BUY/HOLD/SELL
+                        # vocabulary (rather than e.g. "Fade"/"Neutral") so
+                        # the frontend's color-coding, which switches on
+                        # these exact strings, keeps working unchanged.
+                        if move_z is not None:
+                            score = max(-100.0, min(100.0, move_z * 25.0))
+                            result["SignalScore"] = score
+                            if score >= 40:
+                                result["SignalLabel"] = "SELL"
+                            elif score <= -10:
+                                result["SignalLabel"] = "HOLD"
+                            else:
+                                result["SignalLabel"] = "BUY"
+                        else:
+                            # No usable ATR (too little history) - fall back
+                            # to sign-of-move only, same coarse read as
+                            # before this rewrite.
+                            result["SignalLabel"] = "BUY" if pct_move > 0 else "HOLD"
+    except Exception:
+        result = dict(empty)
+
+    _signal_cache[cache_key] = (datetime.now(timezone.utc), dict(result))
+    return dict(result)
+
+
+def _confidence_from_sample(n: int) -> str:
+    if n >= MIN_SAMPLE_FOR_PRIOR * 2:
+        return "High"
+    if n >= MIN_SAMPLE_FOR_PRIOR:
+        return "Medium"
+    return "Low"
+
+
+def _event_type_prior_car(event_type: str) -> tuple[float | None, int]:
+    """Median MoveSoFarPct (as of each event's most recent close at the time
+    it was last read) across all past matched events sharing `event_type`,
+    withheld below MIN_SAMPLE_FOR_PRIOR since a "median" of 1-2 points isn't
+    a calibrated prior yet - see module-level MIN_SAMPLE_FOR_PRIOR comment.
+    Recomputed from events.csv on each call rather than cached: the dataset
+    is a handful of rows, so this is cheap, and it means a freshly-added
+    historical event is reflected immediately without a separate rebuild
+    step."""
+    events = load_events()
+    if events.empty:
+        return None, 0
+    matching = events[events["MatchedKeyword"].apply(lambda kw: _event_type(kw) == event_type)]
+    if matching.empty:
+        return None, 0
+
+    moves = []
+    for _, row in matching.iterrows():
+        symbols = [s for s in str(row.get("MatchedSymbols", "")).split(",") if s]
+        if not symbols:
+            continue
+        pct_move = _raw_move_pct(symbols[0], row.get("Date", ""))
+        if pct_move is not None:
+            moves.append(pct_move)
+
+    n = len(moves)
+    if n < MIN_SAMPLE_FOR_PRIOR:
+        return None, n
+    return float(pd.Series(moves).median()), n
+
+
+def _raw_move_pct(symbol: str, event_date_str: str) -> float | None:
+    """Entry-close-to-current-close % move only, no scoring - the one number
+    _event_type_prior_car needs per historical row. Deliberately not routed
+    through _price_signal to avoid recursion (that function calls
+    _event_type_prior_car) and to skip work (ATR, confidence) that isn't
+    needed here."""
+    try:
+        event_ts = pd.to_datetime(event_date_str, utc=True, errors="coerce")
+        if pd.isna(event_ts):
+            return None
+        event_date = event_ts.date()
+        to_date = date.today()
+        if event_date > to_date:
+            return None
+        df = fetch_stock_history(symbol=symbol, from_date=event_date - timedelta(days=7), to_date=to_date, series="EQ")
+        if df is None or df.empty:
+            return None
+        df = df.sort_values(by="DATE")
+        on_or_before_event = df[df["DATE"].dt.date <= event_date]
+        if on_or_before_event.empty:
+            return None
+        entry_close = float(on_or_before_event.iloc[-1]["CLOSE"])
+        current_close = float(df.iloc[-1]["CLOSE"])
+        if df.iloc[-1]["DATE"].date() == on_or_before_event.iloc[-1]["DATE"].date():
+            return None
+        return (current_close - entry_close) / entry_close * 100
+    except Exception:
+        return None
 
 
 def _load_keyword_config() -> dict:
@@ -386,7 +571,15 @@ def get_state() -> dict:
     records = events.to_dict("records")
     for row in records:
         symbols = [s for s in str(row.get("MatchedSymbols", "")).split(",") if s]
-        row["Signal"] = _price_signal(symbols, row.get("Date", ""))
+        event_type = _event_type(row.get("MatchedKeyword"))
+        signal = _price_signal(symbols, row.get("Date", ""), event_type)
+        # "Signal" stays a plain label string for the existing frontend table
+        # (Phase 5 of the Event Watcher redesign updates the UI to consume
+        # the full breakdown); "SignalDetail" carries the composite score,
+        # ATR-normalized move, and event-type prior for once it does.
+        row["Signal"] = signal["SignalLabel"]
+        row["SignalDetail"] = signal
+        row["EventType"] = event_type
     return {
         "last_checked": meta.get("last_checked"),
         "last_error": meta.get("last_error"),

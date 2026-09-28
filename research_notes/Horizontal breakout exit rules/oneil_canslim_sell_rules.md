@@ -1,0 +1,115 @@
+# O'Neil / CANSLIM Sell Rules and Exit Discipline for Horizontal Breakout Trades
+
+## What is O'Neil's classic 7-8% hard stop-loss rule from the breakout/pivot buy point, and what is its exact rationale?
+
+### Takeaway
+O'Neil's rule is a hard, non-negotiable stop: sell without exception if a stock falls 7-8% below the exact price paid (the buy point/pivot fill price, not a moving average or intraday high), because losses beyond that level require disproportionately larger gains to recover and because most genuinely sound breakouts do not retrace that far.
+
+### Cited Findings
+- "If you buy a stock and its price drops by 7–8% from your entry, you sell it, no questions asked." — [ChartMill: William O'Neil's 7-8% Sell Rule Explained](https://www.chartmill.com/documentation/trading-and-investing/methodologies/527-William-ONeils-7-8-Sell-Rule-Explained)
+- The rationale is explicitly asymmetric/convexity-based: "the difference between an 8% loss and a 15% loss is not 'a bit worse' ... it is more than double the ground you need to make up," and the 7-8% cap sits at "the last point on the curve where recovery is still cheap." — [ChartMill](https://www.chartmill.com/documentation/trading-and-investing/methodologies/527-William-ONeils-7-8-Sell-Rule-Explained)
+- The threshold is empirically derived: "through decades of market analysis, O'Neil found that most healthy stocks do not fall more than 7-8% below a proper buy point," and many genuine breakout failures moved against new positions "several percent" before resuming or continuing lower, making 7-8% "a pragmatic compromise: tight enough to stop large losses, but wide enough to avoid being stopped out by normal day-to-day noise around a breakout." — [ChartMill](https://www.chartmill.com/documentation/trading-and-investing/methodologies/527-William-ONeils-7-8-Sell-Rule-Explained)
+- It is measured strictly "from the price you actually paid. Not from the pivot point. Not from the intraday high. Not from your average cost after adding to the position. From your entry fill." — [ChartMill](https://www.chartmill.com/documentation/trading-and-investing/methodologies/527-William-ONeils-7-8-Sell-Rule-Explained)
+- 7-8% is framed as "the maximum acceptable loss on a fresh position that has not yet had a chance to work" and is "the widest stop you are allowed to use, not the stop you should always use" — implying tighter, position-specific stops (e.g., below the pivot/handle low) are often appropriate before this ceiling is hit. — [ChartMill](https://www.chartmill.com/documentation/trading-and-investing/methodologies/527-William-ONeils-7-8-Sell-Rule-Explained)
+- IBD's own framing pairs this with the profit-taking rule as the two pillars of the system: "Take most profits at 20% to 25% and cut your losses at 7% to 8%." — [Investors.com / IBD on X](https://x.com/IBDinvestors/status/1755350824581034256)
+
+### Inferences
+- For a mechanical, OHLCV-only implementation, the 7-8% stop should be computed from the actual fill/entry price, not from the breakout pivot level or any moving average — this is a precise, directly implementable rule.
+- Since 7-8% is described as a ceiling rather than a fixed value, an algorithmic system could reasonably use a tighter initial stop (e.g., recent swing low or base low) with 7-8% from entry as a hard backstop/cap.
+
+### Gaps
+- No source gives a rigorous quantitative backtest isolating the 7-8% threshold specifically (e.g., testing 6% vs 8% vs 10% stops on the same breakout universe) — the O'Neil Global Advisors "Breakouts: Pump Up the Volume" study (below) does not test stop-loss variants, only reports raw average-loss statistics.
+
+---
+
+## What are O'Neil's specific profit-taking / "sell into strength" rules (20-25% guideline, "3 weeks tight," 8-week hold rule)?
+
+### Takeaway
+The baseline rule is to sell most of a position after a 20-25% gain from the buy point; the explicit override is that if the stock gains 20%+ within the first 3 weeks after a breakout, the trader should instead hold for a minimum of 8 weeks, because such explosive early strength historically marks the market's biggest eventual winners.
+
+### Cited Findings
+- "IBD has 2 main rules for selling stocks: Take most profits at 20% to 25% and cut your losses at 7% to 8%. But here's a caveat for holding big winners." — [Investors.com/IBD on X](https://x.com/IBDinvestors/status/1755350824581034256)
+- "If your stock surges at least 20% within three weeks of breaking out from a proper base, you should hold on for at least eight weeks... The fast, solid gain is a sign that big institutions have major designs on the stock... Such stocks usually go on to become the market's biggest winners." — [Investor's Business Daily via Yahoo Finance: "Know When To Invoke 8-Week Hold Rule For Dramatic Gains"](https://finance.yahoo.com/news/know-invoke-8-week-hold-215800238.html)
+- Restated concisely: "For strong stocks that surge more than 20% in a few weeks, apply the '8-week hold rule' ... holding for at least 8 weeks to aim for a major trend where the stock price doubles or triples." — [note.com summary of How to Make Money in Stocks](https://note.com/stock1/n/n87aea5831d88?hl=en-US)
+- The 8-week clock and the 20%-in-3-weeks trigger are both counted from the breakout date, i.e., these are day/week-count rules directly computable from OHLCV date indices relative to the identified pivot/breakout bar.
+
+### Inferences
+- This produces a clean, mechanical branch for an algorithmic exit: (a) default target/partial-sell trigger at +20-25% from entry; (b) an override condition — if cumulative gain reaches ≥20% within 15 trading days (~3 weeks) of the breakout bar, suppress the profit-taking exit and instead impose a minimum hold of ~40 trading days (~8 weeks) from the breakout, subject to hard stop-loss and topping signals still applying.
+- The "3 weeks tight" pattern name in IBD literature typically refers to a continuation/basing pattern (three consecutive weeks with a very narrow price range, each closing within ~1-1.5% of the prior week's close) used as a re-entry/add signal after a run-up, not as a sell trigger itself — sources did not surface a numeric definition tied to selling; flagged as a gap below.
+
+### Gaps
+- Could not confirm a precise numeric definition of the "3 weeks tight" pattern itself (typical cited threshold is each week's high-low closing within ~1.5% of each other) from a primary/high-confidence source in this pass; secondary mentions conflated it with the 8-week hold trigger rather than defining the tight pattern's own price-range threshold. Should be verified against IBD glossary material directly if precision is needed.
+
+---
+
+## What are O'Neil's technical topping/distribution signals used to exit winners (climax top, exhaustion gaps, large-volume reversal, stalling, distribution days, MA breaks)?
+
+### Takeaway
+O'Neil's exit-for-winners toolkit is a cluster of volume/price-pattern signals — climax runs (vertical, accelerating price gains late in a multi-month advance), exhaustion gaps on heavy volume, "stalling" (heavy volume with little price progress and a weak close), rising counts of market-wide distribution days, and a break of the 50-day moving average on high volume — any of which he treated as a reason to sell without hesitation, especially in combination.
+
+### Cited Findings
+- Concise rule list attributed to O'Neil: "Cut losses quickly at 7-8%. Sell into strength after 20-25% gain. Watch for climax tops — heavy volume + vertical move. Sell if stock breaks 50-day line on high volume. Exit if volume fades on rally attempts. Sell on failed breakouts." — [MARKET INSIGHTS! summary thread on X](https://x.com/IManghaila/status/2066477677947543634)
+- Climax top / climax run definition: leading stocks "top in explosive fashion, making climax runs by suddenly advancing at a much faster rate for one or two weeks after an advance of many months, often ending in exhaustion gaps" (a gap-up open on heavy volume after a long uptrend). — [Yahoo Finance: "Vertical Logic: Learning To Read Sell Signs Nearing A Climax Top"](https://finance.yahoo.com/news/vertical-logic-learning-read-sell-215900159.html); exhaustion gap defined similarly as "a large gap up after several months of a steady uptrend" per IBD terminology — [same source]
+- More specific climax-run parameters: the run typically occurs "at least 18 weeks after a breakout from [a] first or second stage base," features "2 or 3 weeks of rapid advancement (between 25-50% during that period)," with weekly price spread (high minus low) "almost always ... greater than that for any prior week since the beginning of the original move." — [note.com summary of How to Make Money in Stocks, quoting O'Neil](https://note.com/stock1/n/n87aea5831d88?hl=en-US)
+- "Stalling" defined at the index level (same logic applied to individual stocks): "a stalling day is when the index closes higher or roughly flat on heavy volume, but makes little upward progress and finishes near the day's lows" — a subtler distribution variant than an outright down day on high volume; example: a stalling signal on Sept 1, 2021 gave roughly 3 trading sessions of warning before the next leg down began Sept 8, 2021. — [search synthesis citing IBD methodology] (note: this particular worked example could not be traced to a directly fetchable primary IBD article in this pass — flagged as a Gap)
+- 50-day moving average break rule: "Sell if stock breaks 50-day line on high volume" is one of O'Neil's core sell rules for growth stocks; "If he saw a break of the 50-day line, a climax run, or multiple distribution days, he sold without hesitation." A high-volume break is explicitly described as "more serious than a quiet dip." — [X/MARKET INSIGHTS! thread](https://x.com/IManghaila/status/1960904931822469369); corroborated generically by [TradingSim: 50-Day Moving Average Trading Guide](https://www.tradingsim.com/blog/50-day-moving-average)
+- Market-wide distribution days: O'Neil tracked market health via distribution days (major indexes falling on higher volume than the prior session); "four to six such days in a few weeks" signals a correction is likely. Under IBD's counting method, "a distribution day expires after 25 trading sessions, or sooner if the index trades 5% above that day's closing price intraday." — [search synthesis of IBD methodology, corroborating multiple sources including finermarketpoints.com "Distribution Days: How a Market Top Forms"]
+
+### Inferences
+- For a mechanical OHLCV system, the most directly computable topping signals, in descending order of ease-of-implementation, are: (1) close below the 50-day SMA on volume above its recent average (e.g., >150-200% of 50-day average volume, mirroring the breakout volume threshold below) — fully mechanical; (2) a "stalling day" defined as a day with volume above a threshold (e.g., >40-50% above the 50-day average volume) where the close is in the lower portion of the day's range (e.g., bottom 25-50%) despite a flat-to-up close — fully mechanical from OHLCV; (3) a climax-run flag: cumulative gain ≥25-50% over a 2-3 week (10-15 trading day) window occurring ≥18 weeks (~90 trading days) after the breakout date — fully mechanical given a known breakout/pivot date; (4) an exhaustion gap: an opening gap-up of unusual size (e.g., exceeding some multiple of recent average true range) on volume well above average, following an extended prior advance — computable from OHLCV plus a volatility measure like ATR.
+- The "distribution days" count is index-level (market-wide), not stock-specific — for a single-stock mechanical exit system this would require also tracking the relevant benchmark index's OHLCV, which is a data dependency beyond the individual stock's own bars but still computable if index data is available.
+- These topping signals are explicitly meant to be combined/corroborating rather than used singly ("a break of the 50-day line, a climax run, or multiple distribution days" as parallel independent triggers) — suggesting a scoring/any-of-N-conditions approach rather than a single indicator.
+
+### Gaps
+- Could not verify the exact stalling-day volume/close-location thresholds (e.g., "heavy volume" is not quantified numerically in any source found) from a primary IBD source — sources use qualitative language ("heavy," "little progress," "near the lows") without a precise percentage definition. An algorithmic implementation will need to choose its own thresholds (e.g., volume > 1.4-1.5x 50-day average, close in bottom third of day's range) as a reasonable proxy, acknowledging this is an interpretation, not a sourced number.
+- The specific "4-6 distribution days in a few weeks" market-correction threshold is stated but exact day-count windows ("a few weeks") were not pinned to a precise number of trading days in the sources reviewed.
+
+---
+
+## Are there quantitative studies measuring how well these exit rules perform after a volume breakout (hit rates, gain/loss, holding-period stats)?
+
+### Takeaway
+The one directly relevant primary quantitative source is O'Neil Global Advisors' 2022 study "Breakouts: Pump Up the Volume," which measured 63-trading-day (~3 month) forward performance of ~197,000 O'Neil-pattern breakouts (1995-2021) segmented by breakout-day volume surge, finding hit rates around 57%, average gains of 13-20%, and average losses of 11-15% depending on volume-surge bucket — but this study does not test specific exit rules (stops, profit targets, topping signals) themselves, only raw forward-return distributions.
+
+### Cited Findings
+- Study identity: "Breakouts: Pump up the Volume," O'Neil Global Advisors Inc., May 4, 2022, by Timothy Marble, Ronald P. Ognar CFA, and Talin Mirzakhanian. Universe: U.S. stocks 1995-2021, excluding bottom 50% by liquidity and bottom 20% by price, ~197,000 breakout events from O'Neil chart patterns (cup, cup-with-handle, double bottom, flat base, ascending base, saucer, saucer-with-handle, IPO base), daily patterns only. — [O'Neil Global Advisors PDF](https://www.oneilglobaladvisors.com/documents/FG/oneil/research/617948_OGA_Breakouts-OGA.pdf)
+- Definitions: a breakout = day's high price exceeds the pattern's pivot price (e.g., handle high for cup-with-handle, base high for flat base). Volume percent change = breakout-day volume vs. 50-day average volume, where 0% = average volume, 100% = 2x average, 150% = 2.5x average. — [same PDF]
+- Headline results for all breakouts (no volume filter), 63 trading days forward: cumulative alpha (CAPM excess return vs. S&P 500) = 1.1%, cumulative log return = 3.2%; statistically significant at 99% confidence. — [same PDF]
+- Results segmented by breakout-day volume surge (63-day forward stats), from the study's Table 1:
+  - Volume change <50%: cumulative log return 2.61%, alpha 0.67%, hit rate 57.68%, avg gain 12.91%, avg loss -11.42%, avg max favorable excursion 11.11%, avg max adverse excursion -11.04%
+  - 50-100%: return 3.01%, alpha 0.89%, hit rate 56.85%, avg gain 14.97%, avg loss -12.75%, MFE 12.50%, MAE -12.35%
+  - 100-150%: return 3.12%, alpha 1.11%, hit rate 57.10%, avg gain 15.89%, avg loss -13.87%, MFE 13.34%, MAE -13.33%
+  - ≥150% (2.5x+ average volume): return 5.04%, alpha 2.79% (rounds to "2.8%" in the summary), hit rate 56.86%, avg gain 19.90%, avg loss -14.53%, MFE 15.65%, MAE -14.02%
+  — [O'Neil Global Advisors, "Breakouts: Pump up the Volume," Table 1](https://www.oneilglobaladvisors.com/documents/FG/oneil/research/617948_OGA_Breakouts-OGA.pdf)
+- Interpretation given by the authors: outperformance "increases monotonically with volume percent change," and the effect persists/grows through the full 63-day window (per the study's cumulative-alpha chart, the ≥150% bucket's alpha curve separates from the others starting almost immediately after the breakout and continues widening through day 63), suggesting the volume effect is not a one-day pop but a multi-week drift. The authors propose the mechanism is institutional accumulation: heavy volume at breakout signals informed/institutional buying rather than retail activity, and institutions "may need to build their positions over several trading days or weeks." — [same PDF]
+- Explicit caveat from the paper: results are backtested, not live-traded; "backtesting allows the security selection methodology to be adjusted until past returns are maximized... actual performance may differ significantly from backtested performance." — [same PDF, Legal Disclosures]
+
+### Inferences
+- The reported "Average Loss" (-11% to -14.5% across buckets) and "Average Maximum Adverse Excursion" (-11% to -14%) are the raw drawdown behavior of breakout trades with no stop-loss applied over a fixed 63-day hold — they are noticeably wider than O'Neil's own 7-8% stop-loss guideline, implying that a large fraction of losing breakout trades in this dataset would have been stopped out well before the 63-day mark under O'Neil's discretionary rule; the study's average-loss figures should not be read as "what O'Neil-rule losses look like" since no stop was applied.
+- The near-identical hit rates (~57%) across all volume buckets, combined with rising average gains and rising average losses as volume increases, suggests the volume filter primarily increases the magnitude of both winners and losers (higher variance/higher expectancy) rather than the win/loss ratio itself — consistent with a volume-surge filter working through position-sizing/quality-of-mover selection rather than through directional accuracy.
+- The 150% volume-change threshold (2.5x 50-day average volume) is directly reusable as a mechanical breakout-quality filter for a horizontal-breakout OHLCV strategy, since it is explicitly defined and empirically supported in a primary O'Neil-affiliated source.
+
+### Gaps
+- No source found that specifically backtests the 7-8% stop-loss rule, the 20-25% profit-taking rule, the 8-week hold override, or the topping signals (climax top, stalling, 50-day MA break, distribution days) as applied exit rules with their own hit-rate/gain-loss/holding-period statistics. The O'Neil Global Advisors study measures fixed-horizon (63-day) forward returns with no exit rule at all, not the performance of the discretionary O'Neil sell rules themselves.
+- No independent academic paper on momentum/breakout exit timing (e.g., testing optimal trailing-stop or moving-average-exit rules against buy-and-hold-to-fixed-horizon on breakout entries) was located in this research pass; this appears to be a genuine gap in publicly available quantitative literature specific to O'Neil-style breakout exits, as distinct from general momentum-factor literature (which was out of scope here per the assignment's focus on breakout-specific mechanics).
+- Could not find a published O'Neil Global Advisors follow-up study isolating results by individual base type (the "Breakouts" paper explicitly says this is left to "future studies").
+
+---
+
+## How do these rules interact with a failed breakout / undercut of the pivot versus a stock that runs — are exit triggers different?
+
+### Takeaway
+For a breakout that fails immediately, O'Neil-style discipline uses a tighter, faster exit than the full 7-8% ceiling: a close back below the breakout/pivot level (or below the point of purchase) is itself treated as a failure signal to exit promptly, distinct from the topping/climax signals which only apply to breakouts that have already run up substantially; the two failure modes (immediate failure vs. late-stage topping) are handled by different rule sets in the same framework.
+
+### Cited Findings
+- Generic (non-O'Neil-specific but widely used and consistent framework) failed-breakout logic: "The natural stop for a breakout trade is placed just below the broken level. If the breakout is valid, the broken resistance becomes support, and price should not trade back below it. A close back below the breakout level is the signal that the move has failed and the position should be exited." — [search synthesis on breakout trading stop placement]
+- O'Neil's rule list explicitly separates "sell on failed breakouts" as its own bullet, distinct from the 7-8% stop, the climax-top signal, the 50-day MA break, and the volume-fade signal — treating failed-breakout exit as a discrete rule category. — [X/MARKET INSIGHTS! thread on O'Neil's 15 selling rules](https://x.com/IManghaila/status/2066477677947543634)
+- One-sided shakeout/undercut concept (from independent trading-education sources, not O'Neil-specific): a disciplined variant allows "one clear shakeout that undercuts a prior swing low, demands the reclaim, then waits for the daily close through the pivot" before treating the breakout as valid again — i.e., a brief intraday or single-day undercut of the pivot that recovers by the close is not automatically treated as a failure, but a close that stays below the pivot is. — [search synthesis, general breakout/undercut trading literature]
+
+### Inferences
+- In a mechanical OHLCV system, this supports a two-tier failure rule: (a) an "immediate failure" exit — e.g., close below the pivot/breakout level (or below entry minus a small buffer) within the first few days of the trade — which can be tighter than the full 7-8% stop and should fire first if triggered; (b) the 7-8% hard stop as the outer bound for any position that has not been stopped out by the pivot-failure rule; (c) the topping signals (climax run, stalling, 50-day MA break, distribution days) apply only to positions that have already gained meaningfully and are a separate, later-stage rule set for winners, not for freshly failed breakouts.
+- The distinction implies exit triggers should be sequenced by trade age/progress: near-term (days 0-5ish) → pivot-failure / hard stop; mid-term → normal price action management; late-stage after a meaningful run-up → topping/climax signals become the dominant exit consideration.
+
+### Gaps
+- No O'Neil-specific primary source was found that gives a precise numeric definition of "failed breakout" (e.g., exact number of days, exact undercut percentage, or whether it's an intraday-low or closing-price test) distinct from the generic 7-8% stop-loss rule — it is unclear from available sources whether O'Neil treats "sell on failed breakouts" as simply an application of the same 7-8% rule (i.e., no separate numeric threshold) or as a genuinely distinct, tighter rule with its own percentage/day-count. This should be flagged to the report writer as an open question requiring either deeper primary-text research (e.g., direct access to "How to Make Money in Stocks" chapters on selling) or a design decision in the mechanical system (e.g., use pivot-level close-below as the tighter trigger, 7-8% as the outer bound, per the Inference above).
+- No quantitative study was found specifically comparing outcomes of "quick failed breakouts" vs. "breakouts that run" in a similar style to the O'Neil Global Advisors volume study — this pairing of failure-rate statistics with the volume-surge segmentation would be valuable but was not located.

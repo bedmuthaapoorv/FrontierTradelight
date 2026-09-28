@@ -1,7 +1,9 @@
 """Persists each strategy's latest backtest stats (CAGR, Max Drawdown,
-Number of Trades, Composite Score) across runs, keyed by the strategy's
-declared name - so switching strategies and backtesting each one builds up
-a running leaderboard instead of only ever showing the most recent run.
+Number of Trades, Composite Score) across runs, keyed by the (entry
+strategy name, exit strategy name) pair - so switching entry strategies,
+or re-benchmarking the same entry against a different exit strategy,
+builds up a running leaderboard instead of the latest run silently
+overwriting an earlier, differently-paired one.
 
 Also records a hash of the exact rules.md content that produced each
 score ("Rules Content Hash") - this is what lets the Rules tab figure out
@@ -35,24 +37,30 @@ def load_strategy_stats(path):
 
 
 def upsert_strategy_stats(path, strategy_name, cagr_pct, max_dd_pct, composite_score, exit_strategy_name=None, num_trades=None, rules_content_hash=None):
-    """Overwrites the row for strategy_name with its latest stats, leaving
-    every other strategy's previously saved row untouched. Does nothing if
+    """Overwrites the row for (strategy_name, exit_strategy_name) with its
+    latest stats, leaving every other row untouched. Does nothing if
     strategy_name is blank (rules.md has no declared "Strategy Name").
 
-    Note: rows are keyed by strategy_name alone, not by (strategy_name,
-    exit_strategy_name) - backtesting the same rules.md with a different
-    exit strategy overwrites the same row rather than creating a second
-    one. Exit Strategy Name is recorded so you can see which exit produced
-    the numbers currently shown, not to distinguish multiple rows."""
+    Rows are keyed by the (Strategy Name, Exit Strategy Name) PAIR, not by
+    strategy_name alone - benchmarking the same entry rules.md against two
+    different exit strategies keeps two separate leaderboard rows, so you
+    can compare them, instead of the second run silently erasing the
+    first's recorded numbers. A blank/missing Exit Strategy Name is its own
+    distinct key (matches other blank ones, not a different exit's row)."""
     if not strategy_name:
         return
 
+    exit_strategy_name = exit_strategy_name or ""
+
     stats_df = load_strategy_stats(path)
-    stats_df = stats_df[stats_df["Strategy Name"] != strategy_name]
+    same_pair = (stats_df["Strategy Name"] == strategy_name) & (
+        stats_df["Exit Strategy Name"].fillna("") == exit_strategy_name
+    )
+    stats_df = stats_df[~same_pair]
 
     new_row = pd.DataFrame([{
         "Strategy Name": strategy_name,
-        "Exit Strategy Name": exit_strategy_name or "",
+        "Exit Strategy Name": exit_strategy_name,
         "CAGR (%/yr)": cagr_pct,
         "Max Drawdown (%)": max_dd_pct,
         "Number of Trades": num_trades,
