@@ -386,6 +386,28 @@ export interface FundDocumentRow {
   notes: string
 }
 
+export interface EventWatcherSignalDetail {
+  SignalLabel: 'BUY' | 'HOLD' | 'SELL' | 'N/A'
+  SignalScore: number | null
+  MoveSoFarPct: number | null
+  MoveZScore: number | null
+  PriorEventTypeCAR: number | null
+  PriorSampleSize: number
+  SignalConfidence: 'Low' | 'Medium' | 'High'
+}
+
+export interface EventWatcherDurationDetail {
+  DaysHeld: number | null
+  PeakReturnPct: number | null
+  DaysToPeak: number | null
+  CurrentReturnPct: number | null
+  ReversionFromPeakPct: number | null
+  EstDaysToPeak: number | null
+  EstDaysTo50PctReversion: number | null
+  DurationSampleSize: number
+  DurationConfidence: 'Low' | 'Medium' | 'High'
+}
+
 export interface EventWatcherRow {
   Date: string
   Title: string
@@ -394,12 +416,27 @@ export interface EventWatcherRow {
   MatchedSymbols: string
   Source: 'LIVE' | 'HISTORICAL'
   Signal: 'BUY' | 'HOLD' | 'SELL' | 'N/A'
+  SignalDetail: EventWatcherSignalDetail
+  EventType: string
+  Duration: number | null
+  DurationDetail: EventWatcherDurationDetail
+}
+
+export interface EventTypeStats {
+  n: number
+  resolved_n: number
+  median_car_pct: number | null
+  car_iqr_low_pct: number | null
+  car_iqr_high_pct: number | null
+  median_days_to_peak: number | null
+  median_days_to_50pct_reversion: number | null
 }
 
 export interface EventWatcherState {
   last_checked: string | null
   last_error: string | null
   watchlist: Record<string, string>
+  event_type_stats: Record<string, EventTypeStats>
   events: EventWatcherRow[]
 }
 
@@ -434,6 +471,10 @@ export const eventWatcherApi = {
   clearHistorical: () =>
     request<{ status: string; removed: number }>('/event-watcher/historical', { method: 'DELETE' }),
   getScanned: () => request<{ scanned: ScannedReleaseRow[] }>('/event-watcher/scanned'),
+  getStats: () =>
+    request<{ event_types: Record<string, EventTypeStats>; last_updated: string | null; min_sample_for_prior: number }>(
+      '/event-watcher/stats',
+    ),
 }
 
 export interface WatchlistGroup {

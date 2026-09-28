@@ -111,6 +111,11 @@ export default function EventWatcher() {
   }
 
   const watchlistEntries = Object.entries(data.watchlist)
+  const eventTypeStats = Object.entries(data.event_type_stats)
+
+  const formatEventType = (t: string) => t.replace(/_/g, ' ')
+  const fmtPct = (v: number | null) => (v === null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(1)}%`)
+  const fmtDays = (v: number | null) => (v === null ? '—' : `${v}d`)
 
   return (
     <main className="flex-1 overflow-y-auto px-6 py-10">
@@ -208,6 +213,76 @@ export default function EventWatcher() {
 
         <div className="flex flex-col gap-2">
           <div>
+            <div className="mb-0.5 text-[15px] font-extrabold">Event-type calibration</div>
+            <p className="max-w-[660px] text-[12.5px] leading-relaxed text-gray-400">
+              What each event type's Signal/Duration numbers are actually based on. Median CAR and duration columns
+              show &ldquo;insufficient data&rdquo; until enough matched (or fully-played-out) instances exist &mdash;
+              a median of one or two points isn&rsquo;t a calibrated estimate yet, so it&rsquo;s withheld rather than
+              shown as one.
+            </p>
+          </div>
+          {eventTypeStats.length === 0 ? (
+            <div className="rounded-[14px] border border-gray-200 bg-white p-6 text-center text-[13px] text-gray-400">
+              No matched events yet.
+            </div>
+          ) : (
+            <div className="overflow-hidden rounded-[14px] border border-gray-200 bg-white shadow-[0_1px_2px_rgba(16,24,40,0.03)]">
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[640px] border-collapse">
+                  <thead>
+                    <tr className="border-b border-gray-100 bg-[#FAFAFB]">
+                      {['Event type', 'n', 'Resolved n', 'Median CAR', 'Median days to peak', 'Median days to 50% reversion'].map(
+                        (h) => (
+                          <th
+                            key={h}
+                            className="px-4 py-2.5 text-left text-[10.5px] font-bold uppercase tracking-wide text-gray-400"
+                          >
+                            {h}
+                          </th>
+                        ),
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {eventTypeStats.map(([eventType, s]) => (
+                      <tr key={eventType} className="border-b border-gray-100">
+                        <td className="px-4 py-2.5 text-xs font-semibold capitalize text-gray-700">
+                          {formatEventType(eventType)}
+                        </td>
+                        <td className="px-4 py-2.5 font-mono text-xs text-gray-500">{s.n}</td>
+                        <td className="px-4 py-2.5 font-mono text-xs text-gray-500">{s.resolved_n}</td>
+                        <td className="px-4 py-2.5 font-mono text-xs text-gray-500">
+                          {s.median_car_pct === null ? (
+                            <span className="text-gray-300">insufficient data</span>
+                          ) : (
+                            fmtPct(s.median_car_pct)
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5 font-mono text-xs text-gray-500">
+                          {s.median_days_to_peak === null ? (
+                            <span className="text-gray-300">insufficient data</span>
+                          ) : (
+                            fmtDays(s.median_days_to_peak)
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5 font-mono text-xs text-gray-500">
+                          {s.median_days_to_50pct_reversion === null ? (
+                            <span className="text-gray-300">insufficient data</span>
+                          ) : (
+                            fmtDays(s.median_days_to_50pct_reversion)
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <div>
             <div className="mb-0.5 text-[15px] font-extrabold">Matched announcements</div>
             <p className="max-w-[660px] text-[12.5px] leading-relaxed text-gray-400">
               Only releases mentioning both a commissioning/induction-type keyword and a watchlisted shipbuilder are
@@ -239,6 +314,9 @@ export default function EventWatcher() {
                       </th>
                       <th className="px-4 py-2.5 text-left text-[10.5px] font-bold uppercase tracking-wide text-gray-400">
                         Signal
+                      </th>
+                      <th className="px-4 py-2.5 text-left text-[10.5px] font-bold uppercase tracking-wide text-gray-400">
+                        Duration
                       </th>
                     </tr>
                   </thead>
@@ -294,10 +372,42 @@ export default function EventWatcher() {
                                     ? 'bg-amber-100 text-amber-700'
                                     : 'bg-gray-100 text-gray-400'
                             }`}
-                            title="Heuristic only, based on price move since the event date - not backtested."
+                            title="Heuristic only, based on price move since the event date, sized against the stock's own ATR - not backtested."
                           >
                             {row.Signal}
                           </span>
+                          <div className="mt-1 font-mono text-[10px] leading-tight text-gray-400">
+                            {row.SignalDetail.MoveZScore !== null
+                              ? `${row.SignalDetail.MoveZScore.toFixed(2)} ATR`
+                              : row.SignalDetail.MoveSoFarPct !== null
+                                ? fmtPct(row.SignalDetail.MoveSoFarPct)
+                                : '—'}
+                            {' · '}
+                            {row.SignalDetail.SignalConfidence.toLowerCase()} conf
+                            {row.SignalDetail.PriorEventTypeCAR !== null && (
+                              <> (prior {fmtPct(row.SignalDetail.PriorEventTypeCAR)})</>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <div className="font-mono text-[11.5px] text-gray-700">
+                            {row.DurationDetail.DaysHeld === null ? '—' : `${row.DurationDetail.DaysHeld}d held`}
+                            {row.DurationDetail.PeakReturnPct !== null && (
+                              <span className="text-gray-400"> · peak {fmtPct(row.DurationDetail.PeakReturnPct)}</span>
+                            )}
+                          </div>
+                          <div className="mt-1 font-mono text-[10px] leading-tight text-gray-400">
+                            {row.DurationDetail.EstDaysToPeak !== null ? (
+                              <>
+                                est. peak ~{row.DurationDetail.EstDaysToPeak}d
+                                {row.DurationDetail.EstDaysTo50PctReversion !== null &&
+                                  `, 50% back ~${row.DurationDetail.EstDaysTo50PctReversion}d`}
+                                {` (n=${row.DurationDetail.DurationSampleSize})`}
+                              </>
+                            ) : (
+                              <span className="text-gray-300">insufficient history (n={row.DurationDetail.DurationSampleSize})</span>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}

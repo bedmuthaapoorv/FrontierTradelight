@@ -7,7 +7,10 @@ import pandas_ta as ta
 # pyrefly: ignore [missing-import]
 from scipy.stats import linregress
 import datetime
+import random
+import time
 import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 warnings.filterwarnings('ignore')
 
 from universe_fetcher import get_top_stocks_by_sector
@@ -24,30 +27,57 @@ if not STOCK_UNIVERSE:
         "TCS": {"Name": "Tata Consultancy Services", "Sector": "IT"},
     }
 
-def fetch_data(tickers, days=400):
-    """Fetch historical data for all tickers."""
+# jugaad-data hits NSE's raw historical API, which starts throttling/
+# bot-detecting under too much concurrent load - kept modest and staggered
+# for the same reason backtest.py's load_universe_history is (see its
+# FETCH_WORKERS/STAGGER_SECONDS comment), just tuned for a single day's
+# fetch instead of a multi-year one.
+FETCH_WORKERS = 5
+STAGGER_SECONDS = (0.1, 0.5)
+
+
+def _fetch_one(ticker, from_date, to_date):
+    time.sleep(random.uniform(*STAGGER_SECONDS))
+    df = fetch_stock_history(symbol=ticker, from_date=from_date, to_date=to_date, series="EQ")
+    if df is None or df.empty or len(df) <= 100:
+        return ticker, None
+
+    df = df.sort_values(by="DATE").set_index("DATE")
+    df = df.rename(columns={
+        "OPEN": "open",
+        "HIGH": "high",
+        "LOW": "low",
+        "CLOSE": "close",
+        "VOLUME": "volume",
+        "DELIVERY %": "delivery_pct",
+    })
+    if "delivery_pct" not in df.columns:
+        df["delivery_pct"] = float("nan")
+    return ticker, df
+
+
+def fetch_data(tickers, days=400, max_workers=FETCH_WORKERS):
+    """Fetch historical data for all tickers concurrently (matching
+    backtest.py's load_universe_history pattern) - fetches are independent
+    per-symbol NSE requests, so this is the main lever on wall-clock time
+    for a universe this size, same as it is for the backtester."""
     print("Fetching data...")
     to_date = datetime.date.today()
     from_date = to_date - datetime.timedelta(days=days)
     data = {}
-    for ticker in tickers:
-        try:
-            df = fetch_stock_history(symbol=ticker, from_date=from_date, to_date=to_date, series="EQ")
-            if df is not None and not df.empty and len(df) > 100:
-                df = df.sort_values(by="DATE").set_index("DATE")
-                df = df.rename(columns={
-                    "OPEN": "open",
-                    "HIGH": "high",
-                    "LOW": "low",
-                    "CLOSE": "close",
-                    "VOLUME": "volume",
-                    "DELIVERY %": "delivery_pct",
-                })
-                if "delivery_pct" not in df.columns:
-                    df["delivery_pct"] = float("nan")
-                data[ticker] = df
-        except Exception as e:
-            print(f"Failed to fetch {ticker}: {e}")
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_ticker = {
+            executor.submit(_fetch_one, ticker, from_date, to_date): ticker
+            for ticker in tickers
+        }
+        for future in as_completed(future_to_ticker):
+            ticker = future_to_ticker[future]
+            try:
+                ticker, df = future.result()
+                if df is not None:
+                    data[ticker] = df
+            except Exception as e:
+                print(f"Failed to fetch {ticker}: {e}")
     return data
 
 def find_trendline_touches(df):

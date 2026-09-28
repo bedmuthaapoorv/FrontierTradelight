@@ -42,6 +42,7 @@ from constants import (
     EVENT_WATCHER_KEYWORDS_PATH,
     EVENT_WATCHER_META_PATH,
     EVENT_WATCHER_SCANNED_PATH,
+    EVENT_WATCHER_STATS_PATH,
 )
 from nse_utils import fetch_stock_history
 
@@ -192,12 +193,29 @@ COLUMNS = ["Date", "Title", "Link", "MatchedKeyword", "MatchedSymbols", "Source"
 # as a calibrated estimate would be more misleading than showing nothing.
 MIN_SAMPLE_FOR_PRIOR = 5
 
+# Same MaxHold convention as generated_exit_strategy.py's resolve_exit(): a
+# move that's still open after this many trading sessions is treated as
+# "resolved" anyway for calibration purposes, rather than waiting forever
+# for a reversion that may never come.
+MAX_HOLD_DAYS = 90
+
+# How much of the peak GAIN (peak_close - entry_close) has to be given back
+# before a move counts as "resolved" (played out) rather than still-live -
+# see _duration_walk. 50% is a round, conservative middle point; not backed
+# by a specific study (the research behind this redesign found no published
+# duration data for contract/PSU-announcement events specifically to
+# calibrate this against - see the "Event announcement signal and swing
+# duration" report), deliberately easy to retune here as real history
+# accumulates.
+RESOLUTION_REVERSION_PCT = 50.0
+
 SIGNAL_CACHE_TTL = timedelta(hours=6)
 
 # In-memory only - a stale cached signal just means the tab shows a slightly
 # outdated read until it expires or the process restarts, never wrong data
 # written anywhere.
 _signal_cache: dict[str, tuple[datetime, dict]] = {}
+_duration_cache: dict[str, tuple[datetime, dict]] = {}
 
 
 def _atr(df: pd.DataFrame, length: int = 14) -> float | None:
@@ -301,10 +319,10 @@ def _price_signal(symbols: list[str], event_date_str: str, event_type: str = "ot
                             move_z = (current_close - entry_close) / atr_asof_entry
                             result["MoveZScore"] = move_z
 
-                        prior_car, prior_n = _event_type_prior_car(event_type)
-                        result["PriorEventTypeCAR"] = prior_car
-                        result["PriorSampleSize"] = prior_n
-                        result["SignalConfidence"] = _confidence_from_sample(prior_n)
+                        type_stats = get_event_type_stats().get("event_types", {}).get(event_type, {})
+                        result["PriorEventTypeCAR"] = type_stats.get("median_car_pct")
+                        result["PriorSampleSize"] = type_stats.get("n", 0)
+                        result["SignalConfidence"] = _confidence_from_sample(type_stats.get("n", 0))
 
                         # Score is the move-so-far in ATR units, scaled to
                         # +-100 and clipped - a move already several ATRs
@@ -344,43 +362,39 @@ def _confidence_from_sample(n: int) -> str:
     return "Low"
 
 
-def _event_type_prior_car(event_type: str) -> tuple[float | None, int]:
-    """Median MoveSoFarPct (as of each event's most recent close at the time
-    it was last read) across all past matched events sharing `event_type`,
-    withheld below MIN_SAMPLE_FOR_PRIOR since a "median" of 1-2 points isn't
-    a calibrated prior yet - see module-level MIN_SAMPLE_FOR_PRIOR comment.
-    Recomputed from events.csv on each call rather than cached: the dataset
-    is a handful of rows, so this is cheap, and it means a freshly-added
-    historical event is reflected immediately without a separate rebuild
-    step."""
-    events = load_events()
-    if events.empty:
-        return None, 0
-    matching = events[events["MatchedKeyword"].apply(lambda kw: _event_type(kw) == event_type)]
-    if matching.empty:
-        return None, 0
+def _duration_walk(symbol: str, event_date_str: str) -> dict | None:
+    """Day-by-day walk from the event's entry close through to today (capped
+    at MAX_HOLD_DAYS trading sessions), tracking the running peak close and
+    how far price has since given back from it. Same days_held/highest_close
+    shape as generated_exit_strategy.py's resolve_exit()/describe_state(),
+    simplified to describe a move rather than manage a stop - this is the
+    one function both the live per-row duration estimate and the historical
+    calibration store are built on, so a completed historical event and an
+    still-open one go through identical logic.
 
-    moves = []
-    for _, row in matching.iterrows():
-        symbols = [s for s in str(row.get("MatchedSymbols", "")).split(",") if s]
-        if not symbols:
-            continue
-        pct_move = _raw_move_pct(symbols[0], row.get("Date", ""))
-        if pct_move is not None:
-            moves.append(pct_move)
-
-    n = len(moves)
-    if n < MIN_SAMPLE_FOR_PRIOR:
-        return None, n
-    return float(pd.Series(moves).median()), n
-
-
-def _raw_move_pct(symbol: str, event_date_str: str) -> float | None:
-    """Entry-close-to-current-close % move only, no scoring - the one number
-    _event_type_prior_car needs per historical row. Deliberately not routed
-    through _price_signal to avoid recursion (that function calls
-    _event_type_prior_car) and to skip work (ATR, confidence) that isn't
-    needed here."""
+    Returns None if there isn't enough OHLCV data to say anything; otherwise:
+      DaysHeld              - trading sessions elapsed since entry (0 = no
+                               session has closed since the event yet)
+      EntryClose / CurrentClose / PeakClose (highest close since entry)
+      PeakReturnPct          - PeakClose vs EntryClose, %
+      DaysToPeak             - sessions from entry to PeakClose; None if the
+                               most recent session IS the peak (the move may
+                               still be climbing - can't call a peak final
+                               on the day it happens)
+      CurrentReturnPct       - CurrentClose vs EntryClose, %
+      ReversionFromPeakPct   - % of the peak GAIN given back by CurrentClose
+                               (0 if still at/above peak); computed causally
+                               day-by-day against the running peak-to-date,
+                               not the eventual all-time peak, so it matches
+                               what a live position would actually observe
+      DaysTo50PctReversion   - first day index at which the running
+                               reversion-from-peak-to-date first reached
+                               RESOLUTION_REVERSION_PCT; None if it never has
+      Resolved               - True once DaysTo50PctReversion is set or
+                               DaysHeld >= MAX_HOLD_DAYS - i.e. this instance
+                               is a completed sample usable for calibration,
+                               not still an open/live move
+    """
     try:
         event_ts = pd.to_datetime(event_date_str, utc=True, errors="coerce")
         if pd.isna(event_ts):
@@ -389,20 +403,208 @@ def _raw_move_pct(symbol: str, event_date_str: str) -> float | None:
         to_date = date.today()
         if event_date > to_date:
             return None
+        # Widen a week before the event so a non-trading event date (e.g. a
+        # Saturday PIB release) still lands on the last real close at/before
+        # it - same reasoning as _price_signal's fetch below.
         df = fetch_stock_history(symbol=symbol, from_date=event_date - timedelta(days=7), to_date=to_date, series="EQ")
         if df is None or df.empty:
             return None
         df = df.sort_values(by="DATE")
-        on_or_before_event = df[df["DATE"].dt.date <= event_date]
-        if on_or_before_event.empty:
+        on_or_before = df[df["DATE"].dt.date <= event_date]
+        if on_or_before.empty:
             return None
-        entry_close = float(on_or_before_event.iloc[-1]["CLOSE"])
-        current_close = float(df.iloc[-1]["CLOSE"])
-        if df.iloc[-1]["DATE"].date() == on_or_before_event.iloc[-1]["DATE"].date():
-            return None
-        return (current_close - entry_close) / entry_close * 100
+        entry_close = float(on_or_before.iloc[-1]["CLOSE"])
+        entry_row_date = on_or_before.iloc[-1]["DATE"].date()
+        after = df[df["DATE"].dt.date > entry_row_date].iloc[:MAX_HOLD_DAYS]
+
+        days_held = len(after)
+        if days_held == 0:
+            return {
+                "DaysHeld": 0,
+                "EntryClose": entry_close,
+                "CurrentClose": entry_close,
+                "PeakClose": entry_close,
+                "PeakReturnPct": 0.0,
+                "DaysToPeak": None,
+                "CurrentReturnPct": 0.0,
+                "ReversionFromPeakPct": 0.0,
+                "DaysTo50PctReversion": None,
+                "Resolved": False,
+            }
+
+        peak_close = entry_close
+        days_to_peak = 0
+        days_to_50pct_reversion = None
+        for i, (_, row) in enumerate(after.iterrows(), start=1):
+            close = float(row["CLOSE"])
+            if close > peak_close:
+                peak_close = close
+                days_to_peak = i
+            peak_gain_so_far = peak_close - entry_close
+            if days_to_50pct_reversion is None and peak_gain_so_far > 0:
+                reversion_so_far = (peak_close - close) / peak_gain_so_far * 100
+                if reversion_so_far >= RESOLUTION_REVERSION_PCT:
+                    days_to_50pct_reversion = i
+
+        current_close = float(after.iloc[-1]["CLOSE"])
+        peak_gain = peak_close - entry_close
+        peak_return_pct = (peak_gain / entry_close * 100) if entry_close else 0.0
+        current_return_pct = ((current_close - entry_close) / entry_close * 100) if entry_close else 0.0
+        reversion_from_peak_pct = (
+            max(0.0, (peak_close - current_close) / peak_gain * 100) if peak_gain > 0 else 0.0
+        )
+        still_rising = days_to_peak == days_held
+        resolved = days_to_50pct_reversion is not None or days_held >= MAX_HOLD_DAYS
+
+        return {
+            "DaysHeld": days_held,
+            "EntryClose": entry_close,
+            "CurrentClose": current_close,
+            "PeakClose": peak_close,
+            "PeakReturnPct": peak_return_pct,
+            "DaysToPeak": None if still_rising else days_to_peak,
+            "CurrentReturnPct": current_return_pct,
+            "ReversionFromPeakPct": reversion_from_peak_pct,
+            "DaysTo50PctReversion": days_to_50pct_reversion,
+            "Resolved": resolved,
+        }
     except Exception:
         return None
+
+
+def recompute_event_type_stats() -> dict:
+    """Rebuilds the event_type_stats.json calibration store from every row
+    in events.csv, bucketed by event_type. This is what _price_signal's
+    PriorEventTypeCAR and _swing_duration_estimate's EstDaysToPeak /
+    EstDaysTo50PctReversion actually read - computed here, once, rather than
+    re-walking every historical row's OHLCV (one fetch_stock_history call
+    each) on every single get_state() request as the row count grows.
+
+    median_car_pct / car_iqr_*_pct / median_days_to_peak /
+    median_days_to_50pct_reversion are all None below MIN_SAMPLE_FOR_PRIOR
+    (car stats gated on total matched instances `n`; duration stats gated on
+    `resolved_n`, since an in-progress move can't say how long a finished
+    move like this typically takes) - n/resolved_n themselves are always
+    reported so the UI can show e.g. "n=1" instead of just hiding the row."""
+    events = load_events()
+    event_types: dict[str, dict] = {}
+
+    if not events.empty:
+        buckets: dict[str, list[dict]] = {}
+        for _, row in events.iterrows():
+            event_type = _event_type(row.get("MatchedKeyword"))
+            buckets.setdefault(event_type, []).append(row.to_dict())
+
+        for event_type, rows in buckets.items():
+            car_samples: list[float] = []
+            days_to_peak_samples: list[int] = []
+            days_to_50pct_samples: list[int] = []
+            resolved_n = 0
+            for row in rows:
+                symbols = [s for s in str(row.get("MatchedSymbols", "")).split(",") if s]
+                if not symbols:
+                    continue
+                walk = _duration_walk(symbols[0], row.get("Date", ""))
+                if walk is None:
+                    continue
+                if walk["DaysHeld"] > 0:
+                    car_samples.append(walk["CurrentReturnPct"])
+                if walk["Resolved"]:
+                    resolved_n += 1
+                    if walk["DaysToPeak"] is not None:
+                        days_to_peak_samples.append(walk["DaysToPeak"])
+                    if walk["DaysTo50PctReversion"] is not None:
+                        days_to_50pct_samples.append(walk["DaysTo50PctReversion"])
+
+            n = len(rows)
+            car_ok = n >= MIN_SAMPLE_FOR_PRIOR and car_samples
+            duration_ok = resolved_n >= MIN_SAMPLE_FOR_PRIOR
+            car_series = pd.Series(car_samples) if car_ok else None
+            event_types[event_type] = {
+                "n": n,
+                "resolved_n": resolved_n,
+                "median_car_pct": float(car_series.median()) if car_series is not None else None,
+                "car_iqr_low_pct": float(car_series.quantile(0.25)) if car_series is not None else None,
+                "car_iqr_high_pct": float(car_series.quantile(0.75)) if car_series is not None else None,
+                "median_days_to_peak": (
+                    int(pd.Series(days_to_peak_samples).median()) if duration_ok and days_to_peak_samples else None
+                ),
+                "median_days_to_50pct_reversion": (
+                    int(pd.Series(days_to_50pct_samples).median()) if duration_ok and days_to_50pct_samples else None
+                ),
+            }
+
+    stats = {
+        "event_types": event_types,
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+        "min_sample_for_prior": MIN_SAMPLE_FOR_PRIOR,
+    }
+    with open(EVENT_WATCHER_STATS_PATH, "w", encoding="utf-8") as f:
+        json.dump(stats, f, indent=2)
+    return stats
+
+
+def get_event_type_stats() -> dict:
+    """Reads the calibration store, rebuilding it first if it's missing
+    (fresh install) or stale (events.csv has a newer mtime than the store -
+    e.g. refresh()/fetch_historical() just appended rows, or the store was
+    deleted by hand). Cheap to check on every call; the rebuild itself is
+    the only non-trivial cost, and only runs when something actually
+    changed."""
+    needs_rebuild = not os.path.exists(EVENT_WATCHER_STATS_PATH)
+    if not needs_rebuild and os.path.exists(EVENT_WATCHER_EVENTS_PATH):
+        needs_rebuild = os.path.getmtime(EVENT_WATCHER_EVENTS_PATH) > os.path.getmtime(EVENT_WATCHER_STATS_PATH)
+    if needs_rebuild:
+        return recompute_event_type_stats()
+    with open(EVENT_WATCHER_STATS_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _swing_duration_estimate(symbols: list[str], event_date_str: str, event_type: str) -> dict:
+    """Per-row duration output: the live day-by-day walk for this specific
+    instance (DaysHeld/PeakReturnPct/DaysToPeak/ReversionFromPeakPct) merged
+    with the event_type's historical duration prior from the calibration
+    store (EstDaysToPeak/EstDaysTo50PctReversion), once enough *resolved*
+    instances of this event_type exist to say anything about that - see
+    recompute_event_type_stats(). This is the answer to "how long does a
+    swing like this tend to last", the piece the pre-redesign Event Watcher
+    had no way to report at all."""
+    empty: dict = {
+        "DaysHeld": None,
+        "PeakReturnPct": None,
+        "DaysToPeak": None,
+        "CurrentReturnPct": None,
+        "ReversionFromPeakPct": None,
+        "EstDaysToPeak": None,
+        "EstDaysTo50PctReversion": None,
+        "DurationSampleSize": 0,
+        "DurationConfidence": "Low",
+    }
+    if not symbols:
+        return dict(empty)
+    symbol = symbols[0]
+    cache_key = f"{symbol}:{event_date_str}:{event_type}"
+    cached = _duration_cache.get(cache_key)
+    if cached and datetime.now(timezone.utc) - cached[0] < SIGNAL_CACHE_TTL:
+        return dict(cached[1])
+
+    result = dict(empty)
+    walk = _duration_walk(symbol, event_date_str)
+    if walk is not None:
+        result["DaysHeld"] = walk["DaysHeld"]
+        result["PeakReturnPct"] = walk["PeakReturnPct"]
+        result["DaysToPeak"] = walk["DaysToPeak"]
+        result["CurrentReturnPct"] = walk["CurrentReturnPct"]
+        result["ReversionFromPeakPct"] = walk["ReversionFromPeakPct"]
+
+    type_stats = get_event_type_stats().get("event_types", {}).get(event_type, {})
+    result["EstDaysToPeak"] = type_stats.get("median_days_to_peak")
+    result["EstDaysTo50PctReversion"] = type_stats.get("median_days_to_50pct_reversion")
+    result["DurationSampleSize"] = type_stats.get("resolved_n", 0)
+    result["DurationConfidence"] = _confidence_from_sample(type_stats.get("resolved_n", 0))
+
+    _duration_cache[cache_key] = (datetime.now(timezone.utc), dict(result))
+    return dict(result)
 
 
 def _load_keyword_config() -> dict:
@@ -573,17 +775,21 @@ def get_state() -> dict:
         symbols = [s for s in str(row.get("MatchedSymbols", "")).split(",") if s]
         event_type = _event_type(row.get("MatchedKeyword"))
         signal = _price_signal(symbols, row.get("Date", ""), event_type)
-        # "Signal" stays a plain label string for the existing frontend table
-        # (Phase 5 of the Event Watcher redesign updates the UI to consume
-        # the full breakdown); "SignalDetail" carries the composite score,
-        # ATR-normalized move, and event-type prior for once it does.
+        duration = _swing_duration_estimate(symbols, row.get("Date", ""), event_type)
+        # "Signal"/"Duration" stay simple for the pre-redesign frontend
+        # table (BUY/HOLD/SELL string, days-held number); "SignalDetail"/
+        # "DurationDetail" carry the full composite-score/duration
+        # breakdown for the updated UI to consume.
         row["Signal"] = signal["SignalLabel"]
         row["SignalDetail"] = signal
         row["EventType"] = event_type
+        row["Duration"] = duration["DaysHeld"]
+        row["DurationDetail"] = duration
     return {
         "last_checked": meta.get("last_checked"),
         "last_error": meta.get("last_error"),
         "watchlist": {symbol: names[0] for symbol, names in WATCHLIST.items()},
+        "event_type_stats": get_event_type_stats().get("event_types", {}),
         "events": records,
     }
 
@@ -637,6 +843,7 @@ def refresh() -> dict:
         if new_rows:
             combined = pd.concat([existing, pd.DataFrame(new_rows, columns=COLUMNS)], ignore_index=True)
             combined.to_csv(EVENT_WATCHER_EVENTS_PATH, index=False)
+            recompute_event_type_stats()
 
         meta["last_checked"] = datetime.now(timezone.utc).isoformat()
         meta["last_error"] = None
@@ -741,6 +948,7 @@ def fetch_historical(target_iso_date: str) -> dict:
         if new_rows:
             combined = pd.concat([existing, pd.DataFrame(new_rows, columns=COLUMNS)], ignore_index=True)
             combined.to_csv(EVENT_WATCHER_EVENTS_PATH, index=False)
+            recompute_event_type_stats()
 
         return {
             "status": "ok",
@@ -760,4 +968,6 @@ def clear_historical() -> dict:
     removed = int((existing["Source"] == "HISTORICAL").sum())
     remaining = existing[existing["Source"] != "HISTORICAL"]
     remaining.to_csv(EVENT_WATCHER_EVENTS_PATH, index=False)
+    if removed:
+        recompute_event_type_stats()
     return {"status": "ok", "removed": removed}

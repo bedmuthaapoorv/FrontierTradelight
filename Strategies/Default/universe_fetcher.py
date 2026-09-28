@@ -11,15 +11,23 @@ from nse_utils import fetch_stock_history
 CACHE_FILE = UNIVERSE_CACHE_PATH
 CACHE_EXPIRY_DAYS = 1
 
-def fetch_nifty_100():
-    """Fetches the Nifty 100 constituents from NSE."""
-    url = "https://archives.nseindia.com/content/indices/ind_nifty100list.csv"
+def fetch_nifty_500():
+    """Fetches the Nifty 500 constituents from NSE.
+
+    Nifty 500, not Nifty 100 - the Nifty 100 is large-caps only, which made
+    MarketBreadth (calculate_market_breadth, computed over this same
+    universe) measure "% of large-caps above their own 50-day MA" rather
+    than a broad-market breadth figure, and diverged sharply from
+    broader-market breadth readings during this project's own testing.
+    Nifty 500 covers large + mid + small caps, matching what "market
+    breadth" normally means."""
+    url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
     try:
         df = pd.read_csv(url)
         # Columns: Company Name, Industry, Symbol, Series, ISIN Code
         return df
     except Exception as e:
-        print(f"Error fetching Nifty 100 list: {e}")
+        print(f"Error fetching Nifty 500 list: {e}")
         return None
 
 def fetch_symbol_return(symbol, from_date, to_date):
@@ -35,7 +43,7 @@ def fetch_symbol_return(symbol, from_date, to_date):
 
 def get_top_stocks_by_sector(limit_per_sector=50):
     """
-    Fetches the Nifty 100 stocks, calculates their 6-month performance,
+    Fetches the Nifty 500 stocks, calculates their 6-month performance,
     and returns the top `limit_per_sector` stocks per sector.
     """
     # Check cache first
@@ -50,13 +58,13 @@ def get_top_stocks_by_sector(limit_per_sector=50):
         except Exception as e:
             print(f"Error reading cache, fetching fresh data: {e}")
 
-    print("Fetching Nifty 100 list from NSE...")
-    nifty100_df = fetch_nifty_100()
-    if nifty100_df is None or nifty100_df.empty:
-        print("Failed to fetch Nifty 100, returning empty universe.")
+    print("Fetching Nifty 500 list from NSE...")
+    nifty500_df = fetch_nifty_500()
+    if nifty500_df is None or nifty500_df.empty:
+        print("Failed to fetch Nifty 500, returning empty universe.")
         return {}
 
-    tickers_list = nifty100_df['Symbol'].tolist()
+    tickers_list = nifty500_df['Symbol'].tolist()
 
     print(f"Fetching 6-month historical data for {len(tickers_list)} stocks...")
     to_date = datetime.now().date()
@@ -65,7 +73,7 @@ def get_top_stocks_by_sector(limit_per_sector=50):
     performance = []
     symbol_info = {
         row['Symbol']: {"Name": row['Company Name'], "Sector": row['Industry']}
-        for _, row in nifty100_df.iterrows()
+        for _, row in nifty500_df.iterrows()
     }
 
     with ThreadPoolExecutor(max_workers=5) as executor:

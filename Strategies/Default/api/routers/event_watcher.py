@@ -25,6 +25,15 @@ def get_scanned_events():
     return {"scanned": ew.get_scanned()}
 
 
+@router.get("/stats")
+def get_event_type_stats():
+    """The calibration store behind each row's SignalDetail/DurationDetail -
+    per event_type sample sizes and (once MIN_SAMPLE_FOR_PRIOR is met)
+    median CAR/duration, so the UI can show how much to trust a given
+    event_type's numbers independent of any single row."""
+    return ew.get_event_type_stats()
+
+
 class HistoricalRequest(BaseModel):
     date: str
 
