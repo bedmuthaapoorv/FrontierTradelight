@@ -446,6 +446,25 @@ export interface ScannedReleaseRow {
   Source: 'LIVE' | 'HISTORICAL'
 }
 
+/** A single MEESHO investor/analyst meet, one row per meeting date (a
+ * multi-day roadshow's filing produces several rows sharing everything but
+ * MeetingDate). Informational only - no Signal/Ceiling scoring, see
+ * event_watcher_utils.py's investor-meet section for why. */
+export interface InvestorMeetRow {
+  Symbol: string
+  FilingDate: string
+  MeetingDate: string | null
+  EventName: string
+  PdfUrl: string
+  Status: 'scheduled' | 'past' | 'unknown'
+}
+
+export interface InvestorMeetsState {
+  last_checked: string | null
+  last_error: string | null
+  meets: InvestorMeetRow[]
+}
+
 /** Client for api/routers/event_watcher.py - scans PIB press releases for
  * naval commissioning/induction announcements naming a watchlisted
  * shipbuilder. Pure news signal, separate from the backtest engine. */
@@ -470,6 +489,12 @@ export const eventWatcherApi = {
   getStats: () =>
     request<{ event_types: Record<string, EventTypeStats>; last_updated: string | null; min_sample_for_prior: number }>(
       '/event-watcher/stats',
+    ),
+  getInvestorMeets: () => request<InvestorMeetsState>('/event-watcher/investor-meets'),
+  refreshInvestorMeets: () =>
+    request<{ status: string; new_filings?: number; scanned?: number; message?: string }>(
+      '/event-watcher/investor-meets/refresh',
+      { method: 'POST' },
     ),
 }
 

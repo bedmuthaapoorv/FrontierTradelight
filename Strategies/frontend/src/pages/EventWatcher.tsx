@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { eventWatcherApi, type EventWatcherState, type ScannedReleaseRow } from '../api'
+import { eventWatcherApi, type EventWatcherState, type InvestorMeetsState, type ScannedReleaseRow } from '../api'
 import KeywordDrawer from '../components/KeywordDrawer'
 
 function formatDate(iso: string) {
@@ -30,6 +30,10 @@ export default function EventWatcher() {
   const [keywordDrawerOpen, setKeywordDrawerOpen] = useState(false)
   const [scanned, setScanned] = useState<ScannedReleaseRow[] | null>(null)
   const [scannedOpen, setScannedOpen] = useState(false)
+  const [investorMeets, setInvestorMeets] = useState<InvestorMeetsState | null>(null)
+  const [investorMeetsError, setInvestorMeetsError] = useState<string | null>(null)
+  const [refreshingMeets, setRefreshingMeets] = useState(false)
+  const [meetsRefreshMessage, setMeetsRefreshMessage] = useState<string | null>(null)
 
   const load = () => {
     eventWatcherApi
@@ -40,9 +44,31 @@ export default function EventWatcher() {
       .getScanned()
       .then((r) => setScanned(r.scanned))
       .catch(() => setScanned([]))
+    eventWatcherApi
+      .getInvestorMeets()
+      .then(setInvestorMeets)
+      .catch((err) => setInvestorMeetsError(err.message))
   }
 
   useEffect(load, [])
+
+  const onRefreshInvestorMeets = async () => {
+    setRefreshingMeets(true)
+    setMeetsRefreshMessage(null)
+    try {
+      const result = await eventWatcherApi.refreshInvestorMeets()
+      if (result.status === 'ok') {
+        setMeetsRefreshMessage(`Scanned ${result.scanned ?? 0} filing(s), found ${result.new_filings ?? 0} new.`)
+      } else {
+        setMeetsRefreshMessage(`Refresh failed: ${result.message}`)
+      }
+      load()
+    } catch (err) {
+      setMeetsRefreshMessage(err instanceof Error ? err.message : String(err))
+    } finally {
+      setRefreshingMeets(false)
+    }
+  }
 
   const onRefresh = async () => {
     setRefreshing(true)
@@ -412,6 +438,87 @@ export default function EventWatcher() {
                       </tr>
                       )
                     })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="mb-0.5 text-[15px] font-extrabold">Meesho investor/analyst meets</div>
+              <p className="max-w-[660px] text-[12.5px] leading-relaxed text-gray-400">
+                Scheduled and past investor/analyst meets from MEESHO&rsquo;s NSE corporate-announcement filings.
+                Informational only &mdash; a 9-event backtest found no reliable directional edge, so there&rsquo;s no
+                Signal/Ceiling attached here, unlike the PIB table above.
+              </p>
+            </div>
+            <button
+              onClick={onRefreshInvestorMeets}
+              disabled={refreshingMeets}
+              className="rounded-[8px] bg-accent px-3.5 py-2 text-xs font-semibold text-white hover:bg-accent-hover disabled:opacity-50"
+            >
+              {refreshingMeets ? 'Checking NSE...' : 'Check NSE now'}
+            </button>
+          </div>
+          {meetsRefreshMessage && <p className="text-[12.5px] text-gray-500">{meetsRefreshMessage}</p>}
+          {investorMeetsError ? (
+            <p className="text-sm text-red-600">{investorMeetsError}</p>
+          ) : !investorMeets ? (
+            <p className="text-sm text-gray-500">Loading...</p>
+          ) : investorMeets.meets.length === 0 ? (
+            <div className="rounded-[14px] border border-gray-200 bg-white p-10 text-center text-[13px] text-gray-400">
+              No investor meets found yet &mdash; click &ldquo;Check NSE now&rdquo;.
+            </div>
+          ) : (
+            <div className="overflow-hidden rounded-[14px] border border-gray-200 bg-white shadow-[0_1px_2px_rgba(16,24,40,0.03)]">
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[640px] border-collapse">
+                  <thead>
+                    <tr className="border-b border-gray-100 bg-[#FAFAFB]">
+                      {['Meeting date', 'Status', 'Filed on', 'Event'].map((h) => (
+                        <th
+                          key={h}
+                          className="px-4 py-2.5 text-left text-[10.5px] font-bold uppercase tracking-wide text-gray-400"
+                        >
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {investorMeets.meets.map((m, i) => (
+                      <tr key={i} className="border-b border-gray-100 hover:bg-[#FAFAFB]">
+                        <td className="px-4 py-2.5 font-mono text-[11.5px] text-gray-700">
+                          {m.MeetingDate ?? '—'}
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <span
+                            className={`rounded-full px-1.5 py-0.5 font-mono text-[10.5px] font-bold ${
+                              m.Status === 'scheduled'
+                                ? 'bg-accent-soft text-accent'
+                                : m.Status === 'past'
+                                  ? 'bg-gray-100 text-gray-500'
+                                  : 'bg-amber-100 text-amber-700'
+                            }`}
+                          >
+                            {m.Status.toUpperCase()}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2.5 font-mono text-[11px] text-gray-500">{formatDate(m.FilingDate)}</td>
+                        <td className="px-4 py-2.5 text-xs text-gray-700">
+                          {m.PdfUrl ? (
+                            <a href={m.PdfUrl} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+                              {m.EventName || 'Filing PDF'}
+                            </a>
+                          ) : (
+                            m.EventName
+                          )}
+                        </td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>

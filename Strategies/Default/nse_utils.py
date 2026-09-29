@@ -23,6 +23,26 @@ def fetch_stock_history(symbol, from_date, to_date, series="EQ", retries=3, back
             df = stock_df(symbol=symbol, from_date=from_date, to_date=to_date, series=series)
             if df is not None and not df.empty and "SERIES" in df.columns:
                 df = df[df["SERIES"] == series]
+            if df is not None and not df.empty and "DATE" in df.columns:
+                df = df.copy()
+                # jugaad_data's stock_df stamps every row's DATE at
+                # 18:30:00 - that's UTC, and 18:30 UTC + 5:30 (India has no
+                # DST, so this offset is exact) = 24:00 = IST midnight of
+                # the FOLLOWING calendar day. Taking .dt.date() on the raw
+                # value (as every caller does) silently reports every
+                # close one day behind its real IST trading date. Verified
+                # two ways: cross-checked against independently-confirmed
+                # Meesho closes (21 Sep 2026 = Rs.219.15, 22 Sep 2026 =
+                # Rs.240.19, which only line up against this data if you
+                # add a day to the naive date), and against NSE's own
+                # holiday list, which confirms 14 Sep 2026 (Ganesh
+                # Chaturthi) was a market holiday - a gap in the naive
+                # dates that only makes sense with this +1-day correction.
+                # Fixed once here, centrally, rather than at every call
+                # site (event_watcher_utils.py's signal/duration/ATR
+                # calculations all read this DATE column and inherit the
+                # fix automatically).
+                df["DATE"] = df["DATE"] + pd.Timedelta(days=1)
             return df
         except Exception as e:
             last_error = e

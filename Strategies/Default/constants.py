@@ -76,3 +76,10 @@ EVENT_WATCHER_META_PATH = os.path.join(EVENT_WATCHER_DIR, "meta.json")
 EVENT_WATCHER_KEYWORDS_PATH = os.path.join(EVENT_WATCHER_DIR, "keywords.json")
 EVENT_WATCHER_SCANNED_PATH = os.path.join(EVENT_WATCHER_DIR, "last_scanned.json")
 EVENT_WATCHER_STATS_PATH = os.path.join(EVENT_WATCHER_DIR, "event_type_stats.json")
+# Second, unrelated source in the same tab: Meesho investor/analyst meets
+# pulled from NSE's own corporate-announcements API (see
+# event_watcher_utils.py's investor-meet section for why this is separate
+# from the PIB-derived events.csv above - different feed, different schema,
+# informational only, no Signal/Ceiling scoring).
+EVENT_WATCHER_INVESTOR_MEETS_PATH = os.path.join(EVENT_WATCHER_DIR, "meesho_investor_meets.csv")
+EVENT_WATCHER_INVESTOR_MEETS_META_PATH = os.path.join(EVENT_WATCHER_DIR, "meesho_investor_meets_meta.json")

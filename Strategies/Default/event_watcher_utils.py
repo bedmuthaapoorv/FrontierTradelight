@@ -1,4 +1,6 @@
-"""PIB (Press Information Bureau) event watcher.
+"""Event Watcher: two independent, unrelated news sources surfaced in one tab.
+
+1. PIB (Press Information Bureau) press releases.
 
 Origin: Cochin Shipyard rallied ~11% from 23 Jul to 26 Aug 2026 and none of
 the headline-news catalysts we checked (a JV, an MoU, Q1 results) lined up
@@ -26,20 +28,36 @@ project, not a government source - it could go stale or disappear without
 warning, so treat "no new matches" and "feed unreachable" as genuinely
 different failure modes (see the last_error surfaced to the UI) rather than
 assuming silence means nothing happened.
+
+2. Meesho (NSE: MEESHO) investor/analyst meet tracking - see the section
+below starting at MEESHO_SYMBOL. A second, unrelated source layered onto
+this same module rather than a new abstraction: different feed (NSE's own
+corporate-announcements API, not PIB), different schema, and deliberately
+informational-only (no Signal/Ceiling scoring) - see that section's
+docstrings for why. Kept hardcoded to one symbol rather than generalized to
+"any company's investor meets", since that's the only use case asked for and
+generalizing now would mean guessing at a config schema nobody needs yet.
 """
 
+import io
 import json
 import os
+import re
 from datetime import date, datetime, timedelta, timezone
 from datetime import time as dt_time
+from urllib.parse import urlparse
 
 import feedparser
+import jugaad_data.nse as nse
 import pandas as pd
 import pandas_ta as ta
 import requests
+from pypdf import PdfReader
 
 from constants import (
     EVENT_WATCHER_EVENTS_PATH,
+    EVENT_WATCHER_INVESTOR_MEETS_META_PATH,
+    EVENT_WATCHER_INVESTOR_MEETS_PATH,
     EVENT_WATCHER_KEYWORDS_PATH,
     EVENT_WATCHER_META_PATH,
     EVENT_WATCHER_SCANNED_PATH,
@@ -1021,3 +1039,266 @@ def clear_historical() -> dict:
     if removed:
         recompute_event_type_stats()
     return {"status": "ok", "removed": removed}
+
+
+# --------------------------------------------------------------------------
+# Meesho (NSE: MEESHO) investor/analyst meet tracking
+# --------------------------------------------------------------------------
+# A second, independent event source in the same tab (see module docstring).
+# Data source: investor.meesho.com/announcements returns "Access Denied" to
+# automated requests, so this uses NSE's own corporate-announcements API via
+# jugaad_data (already a project dependency) instead - the same API NSE's
+# own "corporate-filings-announcements" page is built on.
+MEESHO_SYMBOL = "MEESHO"
+
+# The exact `desc` value NSE tags an investor/analyst-meet filing with
+# (confirmed against live API responses for MEESHO) - every other `desc`
+# (ESOP grants, board outcomes, etc.) is discarded. This alone isn't
+# specific enough though: it also tags POST-meet filings (call recordings,
+# transcripts) that have no schedule/date table at all - `desc` narrows to
+# "investor-meet-related", and `attchmntText` containing "schedule" (seen
+# as "Schedule of meet", "Schedule of Investors/Analysts meet", and
+# "Revised Schedule of ...") narrows further to "announces a future
+# meeting", which is the only kind of filing with a date to parse out.
+INVESTOR_MEET_DESC = "Analysts/Institutional Investor Meet/Con. Call Updates"
+INVESTOR_MEET_SCHEDULE_MARKER = "schedule"
+
+# How far back each refresh looks. Meesho IPO'd Dec 2025; 400 days
+# comfortably covers "since IPO" with buffer, and re-querying the whole
+# window every refresh (rather than tracking a cursor) is deliberately
+# simple - the SeqId dedup below makes it idempotent, and the corporate-
+# announcements endpoint is cheap compared to the PDF downloads.
+INVESTOR_MEET_LOOKBACK_DAYS = 400
+
+INVESTOR_MEETS_COLUMNS = ["SeqId", "Symbol", "FilingDate", "MeetingDate", "EventName", "PdfUrl"]
+
+# Labelled "Date" for a single-day meet or "Date of events" for a multi-day
+# roadshow (both seen in real filings) - text between that label and the
+# following "Mode" label holds one or more "<Weekday>, <Month> <Day>,
+# <Year>" tokens, one per meeting day.
+_MEETING_DATE_SECTION_RE = re.compile(r"\bDate(?:\s+of\s+events?)?\b\s*[:\-]?\s*(.*?)\bMode\b", re.IGNORECASE | re.DOTALL)
+_MEETING_DATE_TOKEN_RE = re.compile(r"([A-Za-z]{3,9})\s+(\d{1,2}),?\s*(\d{4})")
+
+# The "Event" field ("Meeting with Institutional Investors" in every filing
+# checked) - the label always sits right before either "Name of Event",
+# "Particulars of event(s)", or straight to "Date" depending on the filing.
+_MEETING_EVENT_NAME_RE = re.compile(
+    r"\bEvent\b\s*[:\-]?\s*(.*?)\s*(?:Name of Event|Particulars of events?|Date)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# A multi-column table (one column per meeting day) extracts as its cell
+# text repeated once per column - e.g. a 4-day roadshow's "Event" cell
+# becomes "Meeting with Institutional Investors" x4 concatenated. Collapses
+# immediately-repeated phrases (2-8 words) back down to one occurrence;
+# applied iteratively since collapsing one repeat can reveal another
+# (see _parse_meeting_event_name).
+_REPEATED_PHRASE_RE = re.compile(r"\b(\w[\w/-]*(?:\s+\w[\w/-]*){1,7})\s+\1\b", re.IGNORECASE)
+
+
+def _dedupe_repeated_phrase(text: str) -> str:
+    previous = None
+    while previous != text:
+        previous = text
+        text = _REPEATED_PHRASE_RE.sub(r"\1", text)
+    return text
+
+
+def _parse_meeting_dates(pdf_text: str) -> list[date]:
+    """Extracts the actual meeting date(s) from an investor-meet filing's
+    PDF body. The filing timestamp (an_dt/sort_date from the corporate-
+    announcements API) is NOT the meeting date - SEBI LODR Reg. 30 requires
+    filing at least 2 working days before the meeting (Meesho has
+    repeatedly filed late or same-day and disclosed the delay in the PDF
+    itself), and the real date(s) - sometimes several, for a multi-day
+    roadshow - only appear in a small table inside the PDF. Returns every
+    date found in that table; empty if the expected "Date .../ Mode" shape
+    isn't there (unexpected layout, or the PDF fetch/parse failed) rather
+    than guessing from the filing date."""
+    section_match = _MEETING_DATE_SECTION_RE.search(pdf_text)
+    if not section_match:
+        return []
+    dates = []
+    for month_str, day_str, year_str in _MEETING_DATE_TOKEN_RE.findall(section_match.group(1)):
+        try:
+            dates.append(datetime.strptime(f"{month_str} {day_str} {year_str}", "%B %d %Y").date())
+        except ValueError:
+            continue
+    return dates
+
+
+def _parse_meeting_event_name(pdf_text: str) -> str | None:
+    """Best-effort "Event" field (e.g. "Meeting with Institutional
+    Investors") for display - None if the expected label isn't found,
+    falling back to the API's own attchmntText at the call site."""
+    match = _MEETING_EVENT_NAME_RE.search(pdf_text)
+    if not match:
+        return None
+    # pypdf can't map some PDFs' custom-encoded dash glyph to a real
+    # Unicode codepoint and emits U+FFFD instead - swap in a plain hyphen
+    # rather than showing a replacement-character box in the UI.
+    name = _dedupe_repeated_phrase(" ".join(match.group(1).split())).replace("�", "-")
+    return name or None
+
+
+def _download_pdf_text(session: requests.Session, url: str) -> str | None:
+    """Downloads an NSE corporate-announcement PDF and extracts its text.
+
+    A bare `requests.get` (or even an NSELive session used exactly as
+    NSELive builds it) 404s here rather than returning the PDF -
+    NSELive.__init__ permanently sets a literal `Host: www.nseindia.com`
+    header on its session, and `requests` sends that header as-is on every
+    request from that session instead of inferring it per-URL. The PDF
+    lives on a different host (nsearchives.nseindia.com), which 404s
+    because the Host header doesn't match the host it's actually being
+    asked for - confirmed by comparing the 404 HTML body against a 200 PDF
+    response with only that one header corrected. Overriding Host back to
+    the PDF's own host for just this request is the fix; the session's
+    other cookies (set against nseindia.com when NSELive() was
+    constructed) are what nsearchives.nseindia.com actually needs to allow
+    the request through at all."""
+    try:
+        host = urlparse(url).hostname
+        resp = session.get(url, headers={"Host": host}, timeout=30)
+        resp.raise_for_status()
+        reader = PdfReader(io.BytesIO(resp.content))
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
+    except Exception:
+        return None
+
+
+def load_investor_meets() -> pd.DataFrame:
+    if not os.path.exists(EVENT_WATCHER_INVESTOR_MEETS_PATH):
+        return pd.DataFrame(columns=INVESTOR_MEETS_COLUMNS)
+    return pd.read_csv(EVENT_WATCHER_INVESTOR_MEETS_PATH, keep_default_na=False, dtype={"SeqId": str})
+
+
+def _save_investor_meets(df: pd.DataFrame) -> None:
+    df.to_csv(EVENT_WATCHER_INVESTOR_MEETS_PATH, index=False)
+
+
+def _load_investor_meets_meta() -> dict:
+    if not os.path.exists(EVENT_WATCHER_INVESTOR_MEETS_META_PATH):
+        return {"last_checked": None, "last_error": None}
+    with open(EVENT_WATCHER_INVESTOR_MEETS_META_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _save_investor_meets_meta(meta: dict) -> None:
+    with open(EVENT_WATCHER_INVESTOR_MEETS_META_PATH, "w", encoding="utf-8") as f:
+        json.dump(meta, f)
+
+
+def refresh_investor_meets() -> dict:
+    """Pulls MEESHO's NSE corporate-announcements feed, keeps only
+    Investors/Analysts-meet filings, downloads and parses each new one's
+    attached PDF to recover the real meeting date(s), and merges any new
+    (filing, meeting-date) pairs into the on-disk cache. Idempotent via
+    SeqId (NSE's own unique id per filing) - safe to call repeatedly.
+
+    Deliberately informational only - no Signal/Ceiling scoring attached,
+    unlike the PIB-derived events above. A 9-event backtest across every
+    "Meeting with Institutional Investors" filing since Meesho's Dec 2025
+    IPO found no reliable directional edge (meet-day to next-day: 4/9
+    positive, median -0.38%; meet-day to +2 days: 6/9 positive, median
+    +0.55%, but two-thirds of the total gain came from just two events, at
+    least one independently attributable to an unrelated brokerage note,
+    not the meeting itself) - not a real sample size or a validated signal,
+    just a reason not to attach a score to this feed."""
+    meta = _load_investor_meets_meta()
+    existing = load_investor_meets()
+    existing_seq_ids = set(existing["SeqId"]) if not existing.empty else set()
+
+    try:
+        live = nse.NSELive()
+        to_date = date.today()
+        from_date = to_date - timedelta(days=INVESTOR_MEET_LOOKBACK_DAYS)
+        announcements = live.corporate_announcements(
+            segment="equities", from_date=from_date, to_date=to_date, symbol=MEESHO_SYMBOL
+        )
+        meet_filings = [
+            a
+            for a in (announcements or [])
+            if a.get("desc") == INVESTOR_MEET_DESC
+            and INVESTOR_MEET_SCHEDULE_MARKER in a.get("attchmntText", "").lower()
+        ]
+
+        new_rows = []
+        for filing in meet_filings:
+            seq_id = str(filing.get("seq_id", ""))
+            if not seq_id or seq_id in existing_seq_ids:
+                continue
+            existing_seq_ids.add(seq_id)
+
+            pdf_url = filing.get("attchmntFile", "")
+            pdf_text = _download_pdf_text(live.s, pdf_url) if pdf_url else None
+            meeting_dates = _parse_meeting_dates(pdf_text) if pdf_text else []
+            event_name = (_parse_meeting_event_name(pdf_text) if pdf_text else None) or filing.get("attchmntText", "")
+            filing_date = filing.get("an_dt") or filing.get("exchdisstime") or filing.get("sort_date", "")
+
+            # No meeting_dates means the PDF fetch/parse failed or the
+            # layout didn't match what we expect - still record the filing
+            # (with an empty MeetingDate) so it's visible with a link to
+            # check by hand, rather than silently dropping it.
+            for meeting_date in meeting_dates or [None]:
+                new_rows.append(
+                    {
+                        "SeqId": seq_id,
+                        "Symbol": MEESHO_SYMBOL,
+                        "FilingDate": filing_date,
+                        "MeetingDate": meeting_date.isoformat() if meeting_date else "",
+                        "EventName": event_name,
+                        "PdfUrl": pdf_url,
+                    }
+                )
+
+        if new_rows:
+            combined = pd.concat([existing, pd.DataFrame(new_rows, columns=INVESTOR_MEETS_COLUMNS)], ignore_index=True)
+            _save_investor_meets(combined)
+
+        meta["last_checked"] = datetime.now(timezone.utc).isoformat()
+        meta["last_error"] = None
+        _save_investor_meets_meta(meta)
+        return {"status": "ok", "new_filings": len(new_rows), "scanned": len(meet_filings)}
+    except Exception as exc:
+        meta["last_checked"] = datetime.now(timezone.utc).isoformat()
+        meta["last_error"] = str(exc)
+        _save_investor_meets_meta(meta)
+        return {"status": "error", "message": str(exc)}
+
+
+def get_investor_meets_state() -> dict:
+    """Every cached MEESHO investor/analyst meet, newest meeting (or newest
+    filing, for rows whose date couldn't be parsed) first. Status is
+    "scheduled" if MeetingDate is today or later, "past" if it's before
+    today, "unknown" if the PDF's date couldn't be parsed - purely
+    informational, no Signal/Ceiling attached (see refresh_investor_meets'
+    docstring for why)."""
+    meta = _load_investor_meets_meta()
+    df = load_investor_meets()
+    today = date.today()
+
+    rows = []
+    for _, row in df.iterrows():
+        meeting_date_str = str(row.get("MeetingDate", "") or "")
+        if meeting_date_str:
+            status = "scheduled" if date.fromisoformat(meeting_date_str) >= today else "past"
+        else:
+            status = "unknown"
+        rows.append(
+            {
+                "Symbol": row.get("Symbol", ""),
+                "FilingDate": row.get("FilingDate", ""),
+                "MeetingDate": meeting_date_str or None,
+                "EventName": row.get("EventName", ""),
+                "PdfUrl": row.get("PdfUrl", ""),
+                "Status": status,
+            }
+        )
+
+    rows.sort(key=lambda r: r["MeetingDate"] or r["FilingDate"] or "", reverse=True)
+    return {
+        "last_checked": meta.get("last_checked"),
+        "last_error": meta.get("last_error"),
+        "meets": rows,
+    }

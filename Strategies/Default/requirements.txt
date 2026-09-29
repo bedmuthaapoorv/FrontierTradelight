@@ -10,3 +10,4 @@ uvicorn[standard]
 feedparser
 requests
 python-multipart
+pypdf

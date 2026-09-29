@@ -1,6 +1,8 @@
-"""PIB naval-commissioning event watcher - see event_watcher_utils.py for
-the reasoning. Read-only signal tab: GET returns the cached matches, POST
-/refresh re-polls PIB and merges in anything new."""
+"""PIB naval-commissioning event watcher, plus a second, unrelated Meesho
+investor-meet feed - see event_watcher_utils.py for the reasoning on both.
+Read-only signal tab: GET returns the cached matches, POST /refresh re-polls
+PIB and merges in anything new. /investor-meets is a separate, informational-
+only feed with its own GET/refresh pair."""
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -72,3 +74,13 @@ def get_keywords():
 @router.put("/keywords")
 def put_keywords(body: KeywordConfigRequest):
     return ew.set_keyword_config(body.model_dump())
+
+
+@router.get("/investor-meets")
+def get_investor_meets():
+    return ew.get_investor_meets_state()
+
+
+@router.post("/investor-meets/refresh")
+def refresh_investor_meets():
+    return ew.refresh_investor_meets()
