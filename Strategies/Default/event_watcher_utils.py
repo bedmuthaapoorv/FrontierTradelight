@@ -31,6 +31,7 @@ assuming silence means nothing happened.
 import json
 import os
 from datetime import date, datetime, timedelta, timezone
+from datetime import time as dt_time
 
 import feedparser
 import pandas as pd
@@ -209,6 +210,24 @@ MAX_HOLD_DAYS = 90
 # accumulates.
 RESOLUTION_REVERSION_PCT = 50.0
 
+# The "Ceiling" reported for a matched announcement is deliberately NOT a
+# forward-projected target (an earlier version multiplied entry price by a
+# fixed expected-return percentage - first 2.5x ATR borrowed from
+# Turtle/Chandelier trailing-stop conventions meant for an already-trending
+# move, wildly overshooting real reactions; then a fixed 0.54% pulled from
+# Elayan et al.'s UCLA study of government-contract announcements, which was
+# closer but still an average standing in for this specific stock's actual
+# reaction). See reports/Event study methodology for stock signals.md: the
+# literature's own event studies measure the announcement's effect as the
+# realized (day-1, day0) return - the close on the announcement day itself
+# versus the close immediately before it - not a multi-day forward estimate,
+# since these events are found to be discrete news jumps priced in within a
+# day or two, not slow-building trends. _swing_duration_estimate follows
+# that same convention directly: Ceiling = the announcement day's own close
+# (walk's EntryClose), TargetCeilingPct = its realized % move from
+# PriorClose - an already-observed number once that session has closed, not
+# an estimate.
+
 SIGNAL_CACHE_TTL = timedelta(hours=6)
 
 # In-memory only - a stale cached signal just means the tab shows a slightly
@@ -216,6 +235,30 @@ SIGNAL_CACHE_TTL = timedelta(hours=6)
 # written anywhere.
 _signal_cache: dict[str, tuple[datetime, dict]] = {}
 _duration_cache: dict[str, tuple[datetime, dict]] = {}
+
+
+# NSE's regular trading session ends 15:30 IST.
+NSE_MARKET_CLOSE_IST = dt_time(15, 30)
+
+
+def _effective_reaction_date(event_ts: pd.Timestamp) -> date:
+    """The trading date whose close is the first one that could possibly
+    reflect this announcement. PIB releases carry a real timestamp, not just
+    a date, and government press releases routinely land in the late
+    afternoon or evening - e.g. the BDL contract announcement used to
+    validate this went out at 16:45 IST, forty-five minutes after NSE's
+    15:30 close. Without this adjustment, "on or before the event date"
+    picks THAT SAME DAY's close as the entry/reaction price - a close that
+    was already set before the news was public, silently comparing two
+    pre-announcement prices and reporting a number with no relationship to
+    the announcement at all (and often the opposite sign of the real
+    reaction). If the release lands after the close, the reaction can only
+    start showing up in the NEXT trading day's close onward."""
+    ist_ts = event_ts.tz_convert("Asia/Kolkata")
+    event_date = ist_ts.date()
+    if ist_ts.time() >= NSE_MARKET_CLOSE_IST:
+        return event_date + timedelta(days=1)
+    return event_date
 
 
 def _atr(df: pd.DataFrame, length: int = 14) -> float | None:
@@ -279,7 +322,7 @@ def _price_signal(symbols: list[str], event_date_str: str, event_type: str = "ot
         if pd.isna(event_ts):
             _signal_cache[cache_key] = (datetime.now(timezone.utc), dict(result))
             return dict(result)
-        event_date = event_ts.date()
+        event_date = _effective_reaction_date(event_ts)
         to_date = date.today()
         if event_date <= to_date:
             # Widen a week before the event so a non-trading event date
@@ -375,7 +418,17 @@ def _duration_walk(symbol: str, event_date_str: str) -> dict | None:
     Returns None if there isn't enough OHLCV data to say anything; otherwise:
       DaysHeld              - trading sessions elapsed since entry (0 = no
                                session has closed since the event yet)
-      EntryClose / CurrentClose / PeakClose (highest close since entry)
+      EntryClose             - close on the last trading session on/before
+                               the event date (the event date itself, when
+                               it's a trading day - the common case) -
+                               doubles as "the announcement day's own close"
+                               for the Ceiling metric in
+                               _swing_duration_estimate
+      PriorClose             - close on the trading session immediately
+                               BEFORE entry_row_date (the pre-announcement
+                               baseline); None if no earlier session is in
+                               the fetched window
+      CurrentClose / PeakClose (highest close since entry)
       PeakReturnPct          - PeakClose vs EntryClose, %
       DaysToPeak             - sessions from entry to PeakClose; None if the
                                most recent session IS the peak (the move may
@@ -399,13 +452,15 @@ def _duration_walk(symbol: str, event_date_str: str) -> dict | None:
         event_ts = pd.to_datetime(event_date_str, utc=True, errors="coerce")
         if pd.isna(event_ts):
             return None
-        event_date = event_ts.date()
+        event_date = _effective_reaction_date(event_ts)
         to_date = date.today()
         if event_date > to_date:
             return None
         # Widen a week before the event so a non-trading event date (e.g. a
-        # Saturday PIB release) still lands on the last real close at/before
-        # it - same reasoning as _price_signal's fetch below.
+        # Saturday PIB release, or an after-hours release bumped to the next
+        # trading day by _effective_reaction_date) still lands on the last
+        # real close at/before it - same reasoning as _price_signal's fetch
+        # below.
         df = fetch_stock_history(symbol=symbol, from_date=event_date - timedelta(days=7), to_date=to_date, series="EQ")
         if df is None or df.empty:
             return None
@@ -415,6 +470,8 @@ def _duration_walk(symbol: str, event_date_str: str) -> dict | None:
             return None
         entry_close = float(on_or_before.iloc[-1]["CLOSE"])
         entry_row_date = on_or_before.iloc[-1]["DATE"].date()
+        before_entry = df[df["DATE"].dt.date < entry_row_date]
+        prior_close = float(before_entry.iloc[-1]["CLOSE"]) if not before_entry.empty else None
         after = df[df["DATE"].dt.date > entry_row_date].iloc[:MAX_HOLD_DAYS]
 
         days_held = len(after)
@@ -422,6 +479,7 @@ def _duration_walk(symbol: str, event_date_str: str) -> dict | None:
             return {
                 "DaysHeld": 0,
                 "EntryClose": entry_close,
+                "PriorClose": prior_close,
                 "CurrentClose": entry_close,
                 "PeakClose": entry_close,
                 "PeakReturnPct": 0.0,
@@ -459,6 +517,7 @@ def _duration_walk(symbol: str, event_date_str: str) -> dict | None:
         return {
             "DaysHeld": days_held,
             "EntryClose": entry_close,
+            "PriorClose": prior_close,
             "CurrentClose": current_close,
             "PeakClose": peak_close,
             "PeakReturnPct": peak_return_pct,
@@ -475,17 +534,23 @@ def _duration_walk(symbol: str, event_date_str: str) -> dict | None:
 def recompute_event_type_stats() -> dict:
     """Rebuilds the event_type_stats.json calibration store from every row
     in events.csv, bucketed by event_type. This is what _price_signal's
-    PriorEventTypeCAR and _swing_duration_estimate's EstDaysToPeak /
-    EstDaysTo50PctReversion actually read - computed here, once, rather than
-    re-walking every historical row's OHLCV (one fetch_stock_history call
-    each) on every single get_state() request as the row count grows.
+    PriorEventTypeCAR reads - computed here, once, rather than re-walking
+    every historical row's OHLCV (one fetch_stock_history call each) on
+    every single get_state() request as the row count grows.
 
-    median_car_pct / car_iqr_*_pct / median_days_to_peak /
-    median_days_to_50pct_reversion are all None below MIN_SAMPLE_FOR_PRIOR
-    (car stats gated on total matched instances `n`; duration stats gated on
-    `resolved_n`, since an in-progress move can't say how long a finished
-    move like this typically takes) - n/resolved_n themselves are always
-    reported so the UI can show e.g. "n=1" instead of just hiding the row."""
+    Duration (EstDaysToPeak) deliberately does NOT come from this local
+    calibration store any more - see _swing_duration_estimate's docstring
+    and reports/Event study methodology for stock signals.md. A per-event-
+    type median built from a handful of local PIB matches is exactly the
+    kind of small-sample, un-validated backtest artifact that report argues
+    against; CAR (the signal side) is left on the local store for now since
+    no external substitute for "was this event type historically profitable
+    for this specific watchlist" exists, but that's a narrower, more honest
+    claim than a duration estimate.
+
+    median_car_pct / car_iqr_*_pct are all None below MIN_SAMPLE_FOR_PRIOR
+    (gated on total matched instances `n`) - `n` itself is always reported
+    so the UI can show e.g. "n=1" instead of just hiding the row."""
     events = load_events()
     event_types: dict[str, dict] = {}
 
@@ -497,9 +562,6 @@ def recompute_event_type_stats() -> dict:
 
         for event_type, rows in buckets.items():
             car_samples: list[float] = []
-            days_to_peak_samples: list[int] = []
-            days_to_50pct_samples: list[int] = []
-            resolved_n = 0
             for row in rows:
                 symbols = [s for s in str(row.get("MatchedSymbols", "")).split(",") if s]
                 if not symbols:
@@ -509,29 +571,15 @@ def recompute_event_type_stats() -> dict:
                     continue
                 if walk["DaysHeld"] > 0:
                     car_samples.append(walk["CurrentReturnPct"])
-                if walk["Resolved"]:
-                    resolved_n += 1
-                    if walk["DaysToPeak"] is not None:
-                        days_to_peak_samples.append(walk["DaysToPeak"])
-                    if walk["DaysTo50PctReversion"] is not None:
-                        days_to_50pct_samples.append(walk["DaysTo50PctReversion"])
 
             n = len(rows)
             car_ok = n >= MIN_SAMPLE_FOR_PRIOR and car_samples
-            duration_ok = resolved_n >= MIN_SAMPLE_FOR_PRIOR
             car_series = pd.Series(car_samples) if car_ok else None
             event_types[event_type] = {
                 "n": n,
-                "resolved_n": resolved_n,
                 "median_car_pct": float(car_series.median()) if car_series is not None else None,
                 "car_iqr_low_pct": float(car_series.quantile(0.25)) if car_series is not None else None,
                 "car_iqr_high_pct": float(car_series.quantile(0.75)) if car_series is not None else None,
-                "median_days_to_peak": (
-                    int(pd.Series(days_to_peak_samples).median()) if duration_ok and days_to_peak_samples else None
-                ),
-                "median_days_to_50pct_reversion": (
-                    int(pd.Series(days_to_50pct_samples).median()) if duration_ok and days_to_50pct_samples else None
-                ),
             }
 
     stats = {
@@ -562,23 +610,27 @@ def get_event_type_stats() -> dict:
 
 def _swing_duration_estimate(symbols: list[str], event_date_str: str, event_type: str) -> dict:
     """Per-row duration output: the live day-by-day walk for this specific
-    instance (DaysHeld/PeakReturnPct/DaysToPeak/ReversionFromPeakPct) merged
-    with the event_type's historical duration prior from the calibration
-    store (EstDaysToPeak/EstDaysTo50PctReversion), once enough *resolved*
-    instances of this event_type exist to say anything about that - see
-    recompute_event_type_stats(). This is the answer to "how long does a
-    swing like this tend to last", the piece the pre-redesign Event Watcher
-    had no way to report at all."""
+    instance (DaysHeld/PeakReturnPct/DaysToPeak/ReversionFromPeakPct), plus
+    PriorClose/TargetCeiling/TargetCeilingPct - the announcement day's own
+    close (walk's EntryClose, relabeled TargetCeiling here) versus the close
+    immediately before it, i.e. the realized (day-1, day0) reaction the
+    event-study literature actually measures for this kind of announcement
+    (see reports/Event study methodology for stock signals.md) - an
+    already-observed number once that session has closed, not a projected
+    day-count or a median mined from this watchlist's own small sample of
+    past matched PIB releases. Stays None until the announcement day itself
+    has closed (DaysHeld may already be > 0 while this is still None only in
+    the edge case where PriorClose isn't available - e.g. the very first row
+    in the fetched window)."""
     empty: dict = {
         "DaysHeld": None,
         "PeakReturnPct": None,
         "DaysToPeak": None,
         "CurrentReturnPct": None,
         "ReversionFromPeakPct": None,
-        "EstDaysToPeak": None,
-        "EstDaysTo50PctReversion": None,
-        "DurationSampleSize": 0,
-        "DurationConfidence": "Low",
+        "PriorClose": None,
+        "TargetCeiling": None,
+        "TargetCeilingPct": None,
     }
     if not symbols:
         return dict(empty)
@@ -596,12 +648,10 @@ def _swing_duration_estimate(symbols: list[str], event_date_str: str, event_type
         result["DaysToPeak"] = walk["DaysToPeak"]
         result["CurrentReturnPct"] = walk["CurrentReturnPct"]
         result["ReversionFromPeakPct"] = walk["ReversionFromPeakPct"]
-
-    type_stats = get_event_type_stats().get("event_types", {}).get(event_type, {})
-    result["EstDaysToPeak"] = type_stats.get("median_days_to_peak")
-    result["EstDaysTo50PctReversion"] = type_stats.get("median_days_to_50pct_reversion")
-    result["DurationSampleSize"] = type_stats.get("resolved_n", 0)
-    result["DurationConfidence"] = _confidence_from_sample(type_stats.get("resolved_n", 0))
+        result["TargetCeiling"] = walk["EntryClose"]
+        if walk["PriorClose"] is not None:
+            result["PriorClose"] = walk["PriorClose"]
+            result["TargetCeilingPct"] = (walk["EntryClose"] - walk["PriorClose"]) / walk["PriorClose"] * 100
 
     _duration_cache[cache_key] = (datetime.now(timezone.utc), dict(result))
     return dict(result)

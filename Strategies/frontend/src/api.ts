@@ -402,10 +402,9 @@ export interface EventWatcherDurationDetail {
   DaysToPeak: number | null
   CurrentReturnPct: number | null
   ReversionFromPeakPct: number | null
-  EstDaysToPeak: number | null
-  EstDaysTo50PctReversion: number | null
-  DurationSampleSize: number
-  DurationConfidence: 'Low' | 'Medium' | 'High'
+  PriorClose: number | null
+  TargetCeiling: number | null
+  TargetCeilingPct: number | null
 }
 
 export interface EventWatcherRow {
@@ -424,12 +423,9 @@ export interface EventWatcherRow {
 
 export interface EventTypeStats {
   n: number
-  resolved_n: number
   median_car_pct: number | null
   car_iqr_low_pct: number | null
   car_iqr_high_pct: number | null
-  median_days_to_peak: number | null
-  median_days_to_50pct_reversion: number | null
 }
 
 export interface EventWatcherState {
