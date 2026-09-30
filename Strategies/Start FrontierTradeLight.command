@@ -37,6 +37,16 @@ if [ ! -x "$VENV_UVICORN" ]; then
   exit 1
 fi
 
+# Re-sync the venv whenever requirements.txt changes, so a newly added
+# dependency (e.g. pypdf) doesn't surface as a ModuleNotFoundError at runtime.
+REQS="Default/requirements.txt"
+REQS_STAMP="Default/.venv/.requirements.installed"
+if [ ! -f "$REQS_STAMP" ] || ! cmp -s "$REQS" "$REQS_STAMP"; then
+  echo "requirements.txt changed - installing backend dependencies..."
+  "$VENV_PYTHON" -m pip install -r "$REQS"
+  cp "$REQS" "$REQS_STAMP"
+fi
+
 if [ ! -d "frontend/node_modules" ]; then
   echo "frontend/node_modules not found - running npm install..."
   (cd frontend && npm install)

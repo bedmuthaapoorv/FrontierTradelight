@@ -137,10 +137,6 @@ export default function EventWatcher() {
   }
 
   const watchlistEntries = Object.entries(data.watchlist)
-  const eventTypeStats = Object.entries(data.event_type_stats ?? {})
-
-  const formatEventType = (t: string) => t.replace(/_/g, ' ')
-  const fmtPct = (v: number | null) => (v === null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(1)}%`)
 
   return (
     <main className="flex-1 overflow-y-auto px-6 py-10">
@@ -238,62 +234,6 @@ export default function EventWatcher() {
 
         <div className="flex flex-col gap-2">
           <div>
-            <div className="mb-0.5 text-[15px] font-extrabold">Event-type calibration</div>
-            <p className="max-w-[660px] text-[12.5px] leading-relaxed text-gray-400">
-              What each event type's Signal number is actually based on. Median CAR shows &ldquo;insufficient
-              data&rdquo; until enough matched instances exist &mdash; a median of one or two points isn&rsquo;t a
-              calibrated estimate yet, so it&rsquo;s withheld rather than shown as one. The Ceiling column on the
-              table below isn&rsquo;t estimated from this local history either &mdash; it's the announcement day&rsquo;s
-              own close versus the close right before it, an already-observed number rather than a projection.
-            </p>
-          </div>
-          {eventTypeStats.length === 0 ? (
-            <div className="rounded-[14px] border border-gray-200 bg-white p-6 text-center text-[13px] text-gray-400">
-              No matched events yet.
-            </div>
-          ) : (
-            <div className="overflow-hidden rounded-[14px] border border-gray-200 bg-white shadow-[0_1px_2px_rgba(16,24,40,0.03)]">
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[640px] border-collapse">
-                  <thead>
-                    <tr className="border-b border-gray-100 bg-[#FAFAFB]">
-                      {['Event type', 'n', 'Median CAR'].map(
-                        (h) => (
-                          <th
-                            key={h}
-                            className="px-4 py-2.5 text-left text-[10.5px] font-bold uppercase tracking-wide text-gray-400"
-                          >
-                            {h}
-                          </th>
-                        ),
-                      )}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {eventTypeStats.map(([eventType, s]) => (
-                      <tr key={eventType} className="border-b border-gray-100">
-                        <td className="px-4 py-2.5 text-xs font-semibold capitalize text-gray-700">
-                          {formatEventType(eventType)}
-                        </td>
-                        <td className="px-4 py-2.5 font-mono text-xs text-gray-500">{s.n}</td>
-                        <td className="px-4 py-2.5 font-mono text-xs text-gray-500">
-                          {s.median_car_pct === null ? (
-                            <span className="text-gray-300">insufficient data</span>
-                          ) : (
-                            fmtPct(s.median_car_pct)
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <div>
             <div className="mb-0.5 text-[15px] font-extrabold">Matched announcements</div>
             <p className="max-w-[660px] text-[12.5px] leading-relaxed text-gray-400">
               Only releases mentioning both a commissioning/induction-type keyword and a watchlisted shipbuilder are
@@ -323,36 +263,10 @@ export default function EventWatcher() {
                       <th className="px-4 py-2.5 text-left text-[10.5px] font-bold uppercase tracking-wide text-gray-400">
                         Source
                       </th>
-                      <th className="px-4 py-2.5 text-left text-[10.5px] font-bold uppercase tracking-wide text-gray-400">
-                        Signal
-                      </th>
-                      <th className="px-4 py-2.5 text-left text-[10.5px] font-bold uppercase tracking-wide text-gray-400">
-                        Ceiling
-                      </th>
                     </tr>
                   </thead>
                   <tbody>
-                    {data.events.map((row, i) => {
-                      const signalDetail = row.SignalDetail ?? {
-                        SignalLabel: 'N/A' as const,
-                        SignalScore: null,
-                        MoveSoFarPct: null,
-                        MoveZScore: null,
-                        PriorEventTypeCAR: null,
-                        PriorSampleSize: 0,
-                        SignalConfidence: 'Low' as const,
-                      }
-                      const durationDetail = row.DurationDetail ?? {
-                        DaysHeld: null,
-                        PeakReturnPct: null,
-                        DaysToPeak: null,
-                        CurrentReturnPct: null,
-                        ReversionFromPeakPct: null,
-                        PriorClose: null,
-                        TargetCeiling: null,
-                        TargetCeilingPct: null,
-                      }
-                      return (
+                    {data.events.map((row, i) => (
                       <tr key={i} className="border-b border-gray-100 hover:bg-[#FAFAFB]">
                         <td className="px-4 py-2.5 font-mono text-[11.5px] text-gray-500">{formatDate(row.Date)}</td>
                         <td className="px-4 py-2.5">
@@ -392,52 +306,8 @@ export default function EventWatcher() {
                             {row.Source}
                           </span>
                         </td>
-                        <td className="px-4 py-2.5">
-                          <span
-                            className={`rounded-full px-1.5 py-0.5 font-mono text-[10.5px] font-bold ${
-                              row.Signal === 'BUY'
-                                ? 'bg-accent-soft text-accent'
-                                : row.Signal === 'SELL'
-                                  ? 'bg-red-100 text-red-700'
-                                  : row.Signal === 'HOLD'
-                                    ? 'bg-amber-100 text-amber-700'
-                                    : 'bg-gray-100 text-gray-400'
-                            }`}
-                            title="Heuristic only, based on price move since the event date, sized against the stock's own ATR - not backtested."
-                          >
-                            {row.Signal}
-                          </span>
-                          <div className="mt-1 font-mono text-[10px] leading-tight text-gray-400">
-                            {signalDetail.MoveZScore !== null
-                              ? `${signalDetail.MoveZScore.toFixed(2)} ATR`
-                              : signalDetail.MoveSoFarPct !== null
-                                ? fmtPct(signalDetail.MoveSoFarPct)
-                                : '—'}
-                            {' · '}
-                            {signalDetail.SignalConfidence.toLowerCase()} conf
-                            {signalDetail.PriorEventTypeCAR !== null && (
-                              <> (prior {fmtPct(signalDetail.PriorEventTypeCAR)})</>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <div className="font-mono text-[11.5px] text-gray-700">
-                            {durationDetail.TargetCeiling === null
-                              ? '—'
-                              : `Rs.${durationDetail.TargetCeiling.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`}
-                          </div>
-                          <div className="mt-1 font-mono text-[10px] leading-tight text-gray-400">
-                            {durationDetail.PriorClose !== null && (
-                              <>vs Rs.{durationDetail.PriorClose.toLocaleString('en-IN', { maximumFractionDigits: 2 })} prior close</>
-                            )}
-                            {durationDetail.TargetCeilingPct !== null && (
-                              <> ({fmtPct(durationDetail.TargetCeilingPct)})</>
-                            )}
-                          </div>
-                        </td>
                       </tr>
-                      )
-                    })}
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -451,8 +321,8 @@ export default function EventWatcher() {
               <div className="mb-0.5 text-[15px] font-extrabold">Meesho investor/analyst meets</div>
               <p className="max-w-[660px] text-[12.5px] leading-relaxed text-gray-400">
                 Scheduled and past investor/analyst meets from MEESHO&rsquo;s NSE corporate-announcement filings.
-                Informational only &mdash; a 9-event backtest found no reliable directional edge, so there&rsquo;s no
-                Signal/Ceiling attached here, unlike the PIB table above.
+                Informational only, same as the PIB table above &mdash; a 9-event backtest found no reliable
+                directional edge, so there&rsquo;s no Signal/Ceiling attached here either.
               </p>
             </div>
             <button

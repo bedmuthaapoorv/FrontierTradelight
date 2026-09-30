@@ -12,7 +12,12 @@ same-day alert instead of something we reconstruct after the fact.
 
 Entirely a news-driven signal, separate from the OHLCV-based rules.md
 screener/backtester - this never produces a backtestable strategy, only a
-manual candidate list in its own tab.
+manual candidate list in its own tab. Deliberately informational only: an
+earlier version attached a composite BUY/HOLD/SELL score and a price-target
+"Ceiling" to each match, but with a matched-event count this small, both
+were mostly noise dressed up as a number ("insufficient data"/N=1 in
+practice) - removed rather than kept as a plausible-looking distraction.
+Same reasoning the Meesho investor-meet section below has always used.
 
 Feed source: PIB has no official API, and its own RSS
 (pib.gov.in/RssMain.aspx) turned out to be unusable for this - inspecting
@@ -32,8 +37,8 @@ assuming silence means nothing happened.
 2. Meesho (NSE: MEESHO) investor/analyst meet tracking - see the section
 below starting at MEESHO_SYMBOL. A second, unrelated source layered onto
 this same module rather than a new abstraction: different feed (NSE's own
-corporate-announcements API, not PIB), different schema, and deliberately
-informational-only (no Signal/Ceiling scoring) - see that section's
+corporate-announcements API, not PIB), different schema. Also
+informational-only, like the PIB events above - see that section's
 docstrings for why. Kept hardcoded to one symbol rather than generalized to
 "any company's investor meets", since that's the only use case asked for and
 generalizing now would mean guessing at a config schema nobody needs yet.
@@ -44,13 +49,11 @@ import json
 import os
 import re
 from datetime import date, datetime, timedelta, timezone
-from datetime import time as dt_time
 from urllib.parse import urlparse
 
 import feedparser
 import jugaad_data.nse as nse
 import pandas as pd
-import pandas_ta as ta
 import requests
 from pypdf import PdfReader
 
@@ -61,9 +64,7 @@ from constants import (
     EVENT_WATCHER_KEYWORDS_PATH,
     EVENT_WATCHER_META_PATH,
     EVENT_WATCHER_SCANNED_PATH,
-    EVENT_WATCHER_STATS_PATH,
 )
-from nse_utils import fetch_stock_history
 
 # Unofficial, community-maintained PIB scrape - see module docstring for why
 # PIB's own RSS isn't usable. Updated hourly.
@@ -165,514 +166,7 @@ DEFAULT_EVENT_KEYWORDS = [
     "contract worth",
 ]
 
-# Coarse grouping so the signal/duration logic can reason about "what kind of
-# catalyst is this" instead of treating a keel-laying (years from revenue)
-# the same as a signed contract (revenue-driving now). Keyed by the exact
-# keyword strings in DEFAULT_EVENT_KEYWORDS/EVENT_KEYWORDS; a keyword added
-# later via the UI's keyword editor that isn't in this map falls back to
-# "other" in _event_type rather than raising - the taxonomy is a refinement
-# layer on top of matching, not a gate on it.
-KEYWORD_TO_EVENT_TYPE: dict[str, str] = {
-    "commission": "commissioning",
-    "commissioned": "commissioning",
-    "commissioning": "commissioning",
-    "induct": "commissioning",
-    "inducted": "commissioning",
-    "induction": "commissioning",
-    "handed over": "commissioning",
-    "handing over": "commissioning",
-    "delivered to indian navy": "commissioning",
-    "delivery of": "commissioning",
-    "keel laying": "construction_milestone",
-    "keel-laying": "construction_milestone",
-    "steel cutting": "construction_milestone",
-    "launch of": "construction_milestone",
-    "contract with": "contract_award",
-    "signs contract": "contract_award",
-    "inks contract": "contract_award",
-    "contract worth": "contract_award",
-}
-
-
-def _event_type(keyword: str | None) -> str:
-    """Coarse catalyst category for `keyword` (see KEYWORD_TO_EVENT_TYPE).
-    "other" for anything not in the map - e.g. a keyword added later via the
-    keyword-editor drawer that hasn't been classified yet - so matching
-    never breaks even when the taxonomy lags the keyword list."""
-    if not keyword:
-        return "other"
-    return KEYWORD_TO_EVENT_TYPE.get(keyword.strip().lower(), "other")
-
-
 COLUMNS = ["Date", "Title", "Link", "MatchedKeyword", "MatchedSymbols", "Source"]
-
-# Below this many historical instances of an event_type, a prior (median CAR,
-# median duration) is withheld rather than shown - with 1-2 real observations
-# a "median" is just that one number wearing a stats term, and presenting it
-# as a calibrated estimate would be more misleading than showing nothing.
-MIN_SAMPLE_FOR_PRIOR = 5
-
-# Same MaxHold convention as generated_exit_strategy.py's resolve_exit(): a
-# move that's still open after this many trading sessions is treated as
-# "resolved" anyway for calibration purposes, rather than waiting forever
-# for a reversion that may never come.
-MAX_HOLD_DAYS = 90
-
-# How much of the peak GAIN (peak_close - entry_close) has to be given back
-# before a move counts as "resolved" (played out) rather than still-live -
-# see _duration_walk. 50% is a round, conservative middle point; not backed
-# by a specific study (the research behind this redesign found no published
-# duration data for contract/PSU-announcement events specifically to
-# calibrate this against - see the "Event announcement signal and swing
-# duration" report), deliberately easy to retune here as real history
-# accumulates.
-RESOLUTION_REVERSION_PCT = 50.0
-
-# The "Ceiling" reported for a matched announcement is deliberately NOT a
-# forward-projected target (an earlier version multiplied entry price by a
-# fixed expected-return percentage - first 2.5x ATR borrowed from
-# Turtle/Chandelier trailing-stop conventions meant for an already-trending
-# move, wildly overshooting real reactions; then a fixed 0.54% pulled from
-# Elayan et al.'s UCLA study of government-contract announcements, which was
-# closer but still an average standing in for this specific stock's actual
-# reaction). See reports/Event study methodology for stock signals.md: the
-# literature's own event studies measure the announcement's effect as the
-# realized (day-1, day0) return - the close on the announcement day itself
-# versus the close immediately before it - not a multi-day forward estimate,
-# since these events are found to be discrete news jumps priced in within a
-# day or two, not slow-building trends. _swing_duration_estimate follows
-# that same convention directly: Ceiling = the announcement day's own close
-# (walk's EntryClose), TargetCeilingPct = its realized % move from
-# PriorClose - an already-observed number once that session has closed, not
-# an estimate.
-
-SIGNAL_CACHE_TTL = timedelta(hours=6)
-
-# In-memory only - a stale cached signal just means the tab shows a slightly
-# outdated read until it expires or the process restarts, never wrong data
-# written anywhere.
-_signal_cache: dict[str, tuple[datetime, dict]] = {}
-_duration_cache: dict[str, tuple[datetime, dict]] = {}
-
-
-# NSE's regular trading session ends 15:30 IST.
-NSE_MARKET_CLOSE_IST = dt_time(15, 30)
-
-
-def _effective_reaction_date(event_ts: pd.Timestamp) -> date:
-    """The trading date whose close is the first one that could possibly
-    reflect this announcement. PIB releases carry a real timestamp, not just
-    a date, and government press releases routinely land in the late
-    afternoon or evening - e.g. the BDL contract announcement used to
-    validate this went out at 16:45 IST, forty-five minutes after NSE's
-    15:30 close. Without this adjustment, "on or before the event date"
-    picks THAT SAME DAY's close as the entry/reaction price - a close that
-    was already set before the news was public, silently comparing two
-    pre-announcement prices and reporting a number with no relationship to
-    the announcement at all (and often the opposite sign of the real
-    reaction). If the release lands after the close, the reaction can only
-    start showing up in the NEXT trading day's close onward."""
-    ist_ts = event_ts.tz_convert("Asia/Kolkata")
-    event_date = ist_ts.date()
-    if ist_ts.time() >= NSE_MARKET_CLOSE_IST:
-        return event_date + timedelta(days=1)
-    return event_date
-
-
-def _atr(df: pd.DataFrame, length: int = 14) -> float | None:
-    """Average True Range off a HIGH/LOW/CLOSE frame - same pandas_ta call as
-    generated_exit_strategy.py's _get_atr, used here to size a price move
-    against the stock's own recent volatility instead of a flat percentage
-    threshold (one stock's normal noise is another's breakout)."""
-    try:
-        atr_series = ta.atr(df["HIGH"], df["LOW"], df["CLOSE"], length=length)
-        value = atr_series.iloc[-1]
-        return float(value) if pd.notna(value) else None
-    except Exception:
-        return None
-
-
-def _price_signal(symbols: list[str], event_date_str: str, event_type: str = "other") -> dict:
-    """Composite signal for a matched announcement, based on how far the
-    first matched symbol has moved since the event date, sized against the
-    stock's own volatility and against how this event_type has historically
-    played out (once enough instances exist to say anything about that).
-
-    Returns a dict rather than a single BUY/HOLD/SELL label:
-      SignalLabel      - "Buy" / "Neutral" / "Fade" / "N/A"
-      SignalScore      - -100..100, the move-so-far z-score scaled and
-                         capped; more negative once the move already looks
-                         "played out" relative to the stock's own ATR
-      MoveSoFarPct     - raw % move from entry_close to current_close
-      MoveZScore       - MoveSoFarPct's underlying move in ATR units
-                         (None if ATR couldn't be computed)
-      PriorEventTypeCAR - median historical % move for this event_type
-                         across past matched events, or None below
-                         MIN_SAMPLE_FOR_PRIOR
-      PriorSampleSize  - how many past instances of this event_type that
-                         median is based on
-      SignalConfidence - "Low" / "Medium" / "High", from PriorSampleSize -
-                         a stand-in for "should you trust SignalScore", not
-                         a claim that the score itself is more precise
-
-    This is a heuristic for a manual candidate list, not a validated rule -
-    unlike rules.md/exit_rules.md, it has never been backtested."""
-    empty: dict = {
-        "SignalLabel": "N/A",
-        "SignalScore": None,
-        "MoveSoFarPct": None,
-        "MoveZScore": None,
-        "PriorEventTypeCAR": None,
-        "PriorSampleSize": 0,
-        "SignalConfidence": "Low",
-    }
-    if not symbols:
-        return dict(empty)
-    symbol = symbols[0]
-    cache_key = f"{symbol}:{event_date_str}:{event_type}"
-    cached = _signal_cache.get(cache_key)
-    if cached and datetime.now(timezone.utc) - cached[0] < SIGNAL_CACHE_TTL:
-        return dict(cached[1])
-
-    result = dict(empty)
-    try:
-        event_ts = pd.to_datetime(event_date_str, utc=True, errors="coerce")
-        if pd.isna(event_ts):
-            _signal_cache[cache_key] = (datetime.now(timezone.utc), dict(result))
-            return dict(result)
-        event_date = _effective_reaction_date(event_ts)
-        to_date = date.today()
-        if event_date <= to_date:
-            # Widen a week before the event so a non-trading event date
-            # (e.g. a Saturday PIB release) still lands on the last real
-            # close at/before it, instead of finding zero rows there.
-            df = fetch_stock_history(
-                symbol=symbol, from_date=event_date - timedelta(days=7), to_date=to_date, series="EQ"
-            )
-            if df is not None and not df.empty:
-                df = df.sort_values(by="DATE")
-                on_or_before_event = df[df["DATE"].dt.date <= event_date]
-                if not on_or_before_event.empty:
-                    entry_close = float(on_or_before_event.iloc[-1]["CLOSE"])
-                    current_close = float(df.iloc[-1]["CLOSE"])
-                    if df.iloc[-1]["DATE"].date() == on_or_before_event.iloc[-1]["DATE"].date():
-                        # No trading session has closed since the event yet -
-                        # genuinely too early to read a move, not a data gap.
-                        result["SignalLabel"] = "HOLD"
-                        result["MoveSoFarPct"] = 0.0
-                    else:
-                        pct_move = (current_close - entry_close) / entry_close * 100
-                        result["MoveSoFarPct"] = pct_move
-
-                        # ATR needs ~14 prior trading sessions to mean
-                        # anything - the -7-calendar-day window above (kept
-                        # narrow so a Saturday event date still lands on the
-                        # right entry close) isn't enough for that, so pull
-                        # a separate, wider lookback (~45 calendar days is
-                        # comfortably >14 trading sessions even across a
-                        # holiday-heavy stretch) just for the ATR input.
-                        atr_history = fetch_stock_history(
-                            symbol=symbol, from_date=event_date - timedelta(days=45), to_date=event_date, series="EQ"
-                        )
-                        atr_asof_entry = _atr(atr_history) if atr_history is not None and not atr_history.empty else None
-                        move_z = None
-                        if atr_asof_entry and atr_asof_entry > 0:
-                            move_z = (current_close - entry_close) / atr_asof_entry
-                            result["MoveZScore"] = move_z
-
-                        type_stats = get_event_type_stats().get("event_types", {}).get(event_type, {})
-                        result["PriorEventTypeCAR"] = type_stats.get("median_car_pct")
-                        result["PriorSampleSize"] = type_stats.get("n", 0)
-                        result["SignalConfidence"] = _confidence_from_sample(type_stats.get("n", 0))
-
-                        # Score is the move-so-far in ATR units, scaled to
-                        # +-100 and clipped - a move already several ATRs
-                        # above entry scores as SELL (likely played out), a
-                        # small move as BUY (room to run), regardless of what
-                        # raw % that happens to be for this particular stock.
-                        # Labels are kept to the existing BUY/HOLD/SELL
-                        # vocabulary (rather than e.g. "Fade"/"Neutral") so
-                        # the frontend's color-coding, which switches on
-                        # these exact strings, keeps working unchanged.
-                        if move_z is not None:
-                            score = max(-100.0, min(100.0, move_z * 25.0))
-                            result["SignalScore"] = score
-                            if score >= 40:
-                                result["SignalLabel"] = "SELL"
-                            elif score <= -10:
-                                result["SignalLabel"] = "HOLD"
-                            else:
-                                result["SignalLabel"] = "BUY"
-                        else:
-                            # No usable ATR (too little history) - fall back
-                            # to sign-of-move only, same coarse read as
-                            # before this rewrite.
-                            result["SignalLabel"] = "BUY" if pct_move > 0 else "HOLD"
-    except Exception:
-        result = dict(empty)
-
-    _signal_cache[cache_key] = (datetime.now(timezone.utc), dict(result))
-    return dict(result)
-
-
-def _confidence_from_sample(n: int) -> str:
-    if n >= MIN_SAMPLE_FOR_PRIOR * 2:
-        return "High"
-    if n >= MIN_SAMPLE_FOR_PRIOR:
-        return "Medium"
-    return "Low"
-
-
-def _duration_walk(symbol: str, event_date_str: str) -> dict | None:
-    """Day-by-day walk from the event's entry close through to today (capped
-    at MAX_HOLD_DAYS trading sessions), tracking the running peak close and
-    how far price has since given back from it. Same days_held/highest_close
-    shape as generated_exit_strategy.py's resolve_exit()/describe_state(),
-    simplified to describe a move rather than manage a stop - this is the
-    one function both the live per-row duration estimate and the historical
-    calibration store are built on, so a completed historical event and an
-    still-open one go through identical logic.
-
-    Returns None if there isn't enough OHLCV data to say anything; otherwise:
-      DaysHeld              - trading sessions elapsed since entry (0 = no
-                               session has closed since the event yet)
-      EntryClose             - close on the last trading session on/before
-                               the event date (the event date itself, when
-                               it's a trading day - the common case) -
-                               doubles as "the announcement day's own close"
-                               for the Ceiling metric in
-                               _swing_duration_estimate
-      PriorClose             - close on the trading session immediately
-                               BEFORE entry_row_date (the pre-announcement
-                               baseline); None if no earlier session is in
-                               the fetched window
-      CurrentClose / PeakClose (highest close since entry)
-      PeakReturnPct          - PeakClose vs EntryClose, %
-      DaysToPeak             - sessions from entry to PeakClose; None if the
-                               most recent session IS the peak (the move may
-                               still be climbing - can't call a peak final
-                               on the day it happens)
-      CurrentReturnPct       - CurrentClose vs EntryClose, %
-      ReversionFromPeakPct   - % of the peak GAIN given back by CurrentClose
-                               (0 if still at/above peak); computed causally
-                               day-by-day against the running peak-to-date,
-                               not the eventual all-time peak, so it matches
-                               what a live position would actually observe
-      DaysTo50PctReversion   - first day index at which the running
-                               reversion-from-peak-to-date first reached
-                               RESOLUTION_REVERSION_PCT; None if it never has
-      Resolved               - True once DaysTo50PctReversion is set or
-                               DaysHeld >= MAX_HOLD_DAYS - i.e. this instance
-                               is a completed sample usable for calibration,
-                               not still an open/live move
-    """
-    try:
-        event_ts = pd.to_datetime(event_date_str, utc=True, errors="coerce")
-        if pd.isna(event_ts):
-            return None
-        event_date = _effective_reaction_date(event_ts)
-        to_date = date.today()
-        if event_date > to_date:
-            return None
-        # Widen a week before the event so a non-trading event date (e.g. a
-        # Saturday PIB release, or an after-hours release bumped to the next
-        # trading day by _effective_reaction_date) still lands on the last
-        # real close at/before it - same reasoning as _price_signal's fetch
-        # below.
-        df = fetch_stock_history(symbol=symbol, from_date=event_date - timedelta(days=7), to_date=to_date, series="EQ")
-        if df is None or df.empty:
-            return None
-        df = df.sort_values(by="DATE")
-        on_or_before = df[df["DATE"].dt.date <= event_date]
-        if on_or_before.empty:
-            return None
-        entry_close = float(on_or_before.iloc[-1]["CLOSE"])
-        entry_row_date = on_or_before.iloc[-1]["DATE"].date()
-        before_entry = df[df["DATE"].dt.date < entry_row_date]
-        prior_close = float(before_entry.iloc[-1]["CLOSE"]) if not before_entry.empty else None
-        after = df[df["DATE"].dt.date > entry_row_date].iloc[:MAX_HOLD_DAYS]
-
-        days_held = len(after)
-        if days_held == 0:
-            return {
-                "DaysHeld": 0,
-                "EntryClose": entry_close,
-                "PriorClose": prior_close,
-                "CurrentClose": entry_close,
-                "PeakClose": entry_close,
-                "PeakReturnPct": 0.0,
-                "DaysToPeak": None,
-                "CurrentReturnPct": 0.0,
-                "ReversionFromPeakPct": 0.0,
-                "DaysTo50PctReversion": None,
-                "Resolved": False,
-            }
-
-        peak_close = entry_close
-        days_to_peak = 0
-        days_to_50pct_reversion = None
-        for i, (_, row) in enumerate(after.iterrows(), start=1):
-            close = float(row["CLOSE"])
-            if close > peak_close:
-                peak_close = close
-                days_to_peak = i
-            peak_gain_so_far = peak_close - entry_close
-            if days_to_50pct_reversion is None and peak_gain_so_far > 0:
-                reversion_so_far = (peak_close - close) / peak_gain_so_far * 100
-                if reversion_so_far >= RESOLUTION_REVERSION_PCT:
-                    days_to_50pct_reversion = i
-
-        current_close = float(after.iloc[-1]["CLOSE"])
-        peak_gain = peak_close - entry_close
-        peak_return_pct = (peak_gain / entry_close * 100) if entry_close else 0.0
-        current_return_pct = ((current_close - entry_close) / entry_close * 100) if entry_close else 0.0
-        reversion_from_peak_pct = (
-            max(0.0, (peak_close - current_close) / peak_gain * 100) if peak_gain > 0 else 0.0
-        )
-        still_rising = days_to_peak == days_held
-        resolved = days_to_50pct_reversion is not None or days_held >= MAX_HOLD_DAYS
-
-        return {
-            "DaysHeld": days_held,
-            "EntryClose": entry_close,
-            "PriorClose": prior_close,
-            "CurrentClose": current_close,
-            "PeakClose": peak_close,
-            "PeakReturnPct": peak_return_pct,
-            "DaysToPeak": None if still_rising else days_to_peak,
-            "CurrentReturnPct": current_return_pct,
-            "ReversionFromPeakPct": reversion_from_peak_pct,
-            "DaysTo50PctReversion": days_to_50pct_reversion,
-            "Resolved": resolved,
-        }
-    except Exception:
-        return None
-
-
-def recompute_event_type_stats() -> dict:
-    """Rebuilds the event_type_stats.json calibration store from every row
-    in events.csv, bucketed by event_type. This is what _price_signal's
-    PriorEventTypeCAR reads - computed here, once, rather than re-walking
-    every historical row's OHLCV (one fetch_stock_history call each) on
-    every single get_state() request as the row count grows.
-
-    Duration (EstDaysToPeak) deliberately does NOT come from this local
-    calibration store any more - see _swing_duration_estimate's docstring
-    and reports/Event study methodology for stock signals.md. A per-event-
-    type median built from a handful of local PIB matches is exactly the
-    kind of small-sample, un-validated backtest artifact that report argues
-    against; CAR (the signal side) is left on the local store for now since
-    no external substitute for "was this event type historically profitable
-    for this specific watchlist" exists, but that's a narrower, more honest
-    claim than a duration estimate.
-
-    median_car_pct / car_iqr_*_pct are all None below MIN_SAMPLE_FOR_PRIOR
-    (gated on total matched instances `n`) - `n` itself is always reported
-    so the UI can show e.g. "n=1" instead of just hiding the row."""
-    events = load_events()
-    event_types: dict[str, dict] = {}
-
-    if not events.empty:
-        buckets: dict[str, list[dict]] = {}
-        for _, row in events.iterrows():
-            event_type = _event_type(row.get("MatchedKeyword"))
-            buckets.setdefault(event_type, []).append(row.to_dict())
-
-        for event_type, rows in buckets.items():
-            car_samples: list[float] = []
-            for row in rows:
-                symbols = [s for s in str(row.get("MatchedSymbols", "")).split(",") if s]
-                if not symbols:
-                    continue
-                walk = _duration_walk(symbols[0], row.get("Date", ""))
-                if walk is None:
-                    continue
-                if walk["DaysHeld"] > 0:
-                    car_samples.append(walk["CurrentReturnPct"])
-
-            n = len(rows)
-            car_ok = n >= MIN_SAMPLE_FOR_PRIOR and car_samples
-            car_series = pd.Series(car_samples) if car_ok else None
-            event_types[event_type] = {
-                "n": n,
-                "median_car_pct": float(car_series.median()) if car_series is not None else None,
-                "car_iqr_low_pct": float(car_series.quantile(0.25)) if car_series is not None else None,
-                "car_iqr_high_pct": float(car_series.quantile(0.75)) if car_series is not None else None,
-            }
-
-    stats = {
-        "event_types": event_types,
-        "last_updated": datetime.now(timezone.utc).isoformat(),
-        "min_sample_for_prior": MIN_SAMPLE_FOR_PRIOR,
-    }
-    with open(EVENT_WATCHER_STATS_PATH, "w", encoding="utf-8") as f:
-        json.dump(stats, f, indent=2)
-    return stats
-
-
-def get_event_type_stats() -> dict:
-    """Reads the calibration store, rebuilding it first if it's missing
-    (fresh install) or stale (events.csv has a newer mtime than the store -
-    e.g. refresh()/fetch_historical() just appended rows, or the store was
-    deleted by hand). Cheap to check on every call; the rebuild itself is
-    the only non-trivial cost, and only runs when something actually
-    changed."""
-    needs_rebuild = not os.path.exists(EVENT_WATCHER_STATS_PATH)
-    if not needs_rebuild and os.path.exists(EVENT_WATCHER_EVENTS_PATH):
-        needs_rebuild = os.path.getmtime(EVENT_WATCHER_EVENTS_PATH) > os.path.getmtime(EVENT_WATCHER_STATS_PATH)
-    if needs_rebuild:
-        return recompute_event_type_stats()
-    with open(EVENT_WATCHER_STATS_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def _swing_duration_estimate(symbols: list[str], event_date_str: str, event_type: str) -> dict:
-    """Per-row duration output: the live day-by-day walk for this specific
-    instance (DaysHeld/PeakReturnPct/DaysToPeak/ReversionFromPeakPct), plus
-    PriorClose/TargetCeiling/TargetCeilingPct - the announcement day's own
-    close (walk's EntryClose, relabeled TargetCeiling here) versus the close
-    immediately before it, i.e. the realized (day-1, day0) reaction the
-    event-study literature actually measures for this kind of announcement
-    (see reports/Event study methodology for stock signals.md) - an
-    already-observed number once that session has closed, not a projected
-    day-count or a median mined from this watchlist's own small sample of
-    past matched PIB releases. Stays None until the announcement day itself
-    has closed (DaysHeld may already be > 0 while this is still None only in
-    the edge case where PriorClose isn't available - e.g. the very first row
-    in the fetched window)."""
-    empty: dict = {
-        "DaysHeld": None,
-        "PeakReturnPct": None,
-        "DaysToPeak": None,
-        "CurrentReturnPct": None,
-        "ReversionFromPeakPct": None,
-        "PriorClose": None,
-        "TargetCeiling": None,
-        "TargetCeilingPct": None,
-    }
-    if not symbols:
-        return dict(empty)
-    symbol = symbols[0]
-    cache_key = f"{symbol}:{event_date_str}:{event_type}"
-    cached = _duration_cache.get(cache_key)
-    if cached and datetime.now(timezone.utc) - cached[0] < SIGNAL_CACHE_TTL:
-        return dict(cached[1])
-
-    result = dict(empty)
-    walk = _duration_walk(symbol, event_date_str)
-    if walk is not None:
-        result["DaysHeld"] = walk["DaysHeld"]
-        result["PeakReturnPct"] = walk["PeakReturnPct"]
-        result["DaysToPeak"] = walk["DaysToPeak"]
-        result["CurrentReturnPct"] = walk["CurrentReturnPct"]
-        result["ReversionFromPeakPct"] = walk["ReversionFromPeakPct"]
-        result["TargetCeiling"] = walk["EntryClose"]
-        if walk["PriorClose"] is not None:
-            result["PriorClose"] = walk["PriorClose"]
-            result["TargetCeilingPct"] = (walk["EntryClose"] - walk["PriorClose"]) / walk["PriorClose"] * 100
-
-    _duration_cache[cache_key] = (datetime.now(timezone.utc), dict(result))
-    return dict(result)
 
 
 def _load_keyword_config() -> dict:
@@ -839,25 +333,10 @@ def get_state() -> dict:
         events = events.assign(_sort_ts=pd.to_datetime(events["Date"], errors="coerce", utc=True))
         events = events.sort_values("_sort_ts", ascending=False, na_position="last").drop(columns="_sort_ts")
     records = events.to_dict("records")
-    for row in records:
-        symbols = [s for s in str(row.get("MatchedSymbols", "")).split(",") if s]
-        event_type = _event_type(row.get("MatchedKeyword"))
-        signal = _price_signal(symbols, row.get("Date", ""), event_type)
-        duration = _swing_duration_estimate(symbols, row.get("Date", ""), event_type)
-        # "Signal"/"Duration" stay simple for the pre-redesign frontend
-        # table (BUY/HOLD/SELL string, days-held number); "SignalDetail"/
-        # "DurationDetail" carry the full composite-score/duration
-        # breakdown for the updated UI to consume.
-        row["Signal"] = signal["SignalLabel"]
-        row["SignalDetail"] = signal
-        row["EventType"] = event_type
-        row["Duration"] = duration["DaysHeld"]
-        row["DurationDetail"] = duration
     return {
         "last_checked": meta.get("last_checked"),
         "last_error": meta.get("last_error"),
         "watchlist": {symbol: names[0] for symbol, names in WATCHLIST.items()},
-        "event_type_stats": get_event_type_stats().get("event_types", {}),
         "events": records,
     }
 
@@ -911,7 +390,6 @@ def refresh() -> dict:
         if new_rows:
             combined = pd.concat([existing, pd.DataFrame(new_rows, columns=COLUMNS)], ignore_index=True)
             combined.to_csv(EVENT_WATCHER_EVENTS_PATH, index=False)
-            recompute_event_type_stats()
 
         meta["last_checked"] = datetime.now(timezone.utc).isoformat()
         meta["last_error"] = None
@@ -1016,7 +494,6 @@ def fetch_historical(target_iso_date: str) -> dict:
         if new_rows:
             combined = pd.concat([existing, pd.DataFrame(new_rows, columns=COLUMNS)], ignore_index=True)
             combined.to_csv(EVENT_WATCHER_EVENTS_PATH, index=False)
-            recompute_event_type_stats()
 
         return {
             "status": "ok",
@@ -1036,8 +513,6 @@ def clear_historical() -> dict:
     removed = int((existing["Source"] == "HISTORICAL").sum())
     remaining = existing[existing["Source"] != "HISTORICAL"]
     remaining.to_csv(EVENT_WATCHER_EVENTS_PATH, index=False)
-    if removed:
-        recompute_event_type_stats()
     return {"status": "ok", "removed": removed}
 
 
@@ -1062,6 +537,23 @@ MEESHO_SYMBOL = "MEESHO"
 # meeting", which is the only kind of filing with a date to parse out.
 INVESTOR_MEET_DESC = "Analysts/Institutional Investor Meet/Con. Call Updates"
 INVESTOR_MEET_SCHEDULE_MARKER = "schedule"
+
+# `desc`+"schedule" narrows to "announces a future meeting", but that still
+# lets through other scheduled-event types NSE files under the same broad
+# desc bucket - earnings conference calls ("Meesho Limited - Q1FY27 Earnings
+# Conference Call"), broker-conference slots named after the conference, not
+# the meeting type ("Kotak Chasing Growth 2026", "Advantage India - Axis
+# Capital's India Conference"), and standalone non-deal roadshows filed
+# without the "Meeting with Institutional Investors" header at all. Real
+# examples pulled from this tracker's own cached data before this filter
+# existed. Matched against the PDF-parsed EventName (see
+# _parse_meeting_event_name) with startswith rather than equality: a
+# multi-day roadshow's Event cell parses as "Meeting with Institutional
+# Investors Non-Deal Roadshow" or "...Particulars of event One-on-one/
+# Group Meetings" (the regex boundary bleeds into the next field) - both are
+# still genuinely a Meeting with Institutional Investors filing and should
+# be kept, just with untrimmed trailing text.
+INVESTOR_MEET_EVENT_NAME_PREFIX = "meeting with institutional investors"
 
 # How far back each refresh looks. Meesho IPO'd Dec 2025; 400 days
 # comfortably covers "since IPO" with buffer, and re-querying the whole
@@ -1197,7 +689,7 @@ def refresh_investor_meets() -> dict:
     SeqId (NSE's own unique id per filing) - safe to call repeatedly.
 
     Deliberately informational only - no Signal/Ceiling scoring attached,
-    unlike the PIB-derived events above. A 9-event backtest across every
+    same as the PIB-derived events above. A 9-event backtest across every
     "Meeting with Institutional Investors" filing since Meesho's Dec 2025
     IPO found no reliable directional edge (meet-day to next-day: 4/9
     positive, median -0.38%; meet-day to +2 days: 6/9 positive, median
@@ -1235,6 +727,22 @@ def refresh_investor_meets() -> dict:
             meeting_dates = _parse_meeting_dates(pdf_text) if pdf_text else []
             event_name = (_parse_meeting_event_name(pdf_text) if pdf_text else None) or filing.get("attchmntText", "")
             filing_date = filing.get("an_dt") or filing.get("exchdisstime") or filing.get("sort_date", "")
+
+            # desc + "schedule" only narrows to "a scheduled event of some
+            # kind" - earnings calls, broker-conference slots, and bare
+            # roadshows share that same bucket (see
+            # INVESTOR_MEET_EVENT_NAME_PREFIX). Only "Meeting with
+            # Institutional Investors" filings are what this tracker is
+            # actually meant to surface; skip anything else. Deliberately
+            # NOT written to the cache at all (not even as a filtered-out
+            # row), so a filing rejected here has no seq_id in
+            # events.csv/existing_seq_ids and gets its PDF re-downloaded and
+            # re-checked on every future refresh rather than remembered as
+            # "seen" - a few extra PDF fetches for the small number of
+            # non-matching filings Meesho has filed is a fine trade for not
+            # needing a second persisted "skipped" list.
+            if not event_name.strip().lower().startswith(INVESTOR_MEET_EVENT_NAME_PREFIX):
+                continue
 
             # No meeting_dates means the PDF fetch/parse failed or the
             # layout didn't match what we expect - still record the filing
