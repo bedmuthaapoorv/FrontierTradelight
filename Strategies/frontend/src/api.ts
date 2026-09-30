@@ -113,6 +113,8 @@ export interface Holding {
   EntryPrice: number | ''
   EntryDate: string
   CurrentPrice: number | '' | null
+  /** Filename in ExitRules_backup/; empty/null = current exit_rules.md. */
+  ExitRule?: string | null
 }
 
 export const holdingsApi = {

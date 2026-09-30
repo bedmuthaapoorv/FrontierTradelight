@@ -13,7 +13,7 @@ from constants import HOLDINGS_PATH
 
 router = APIRouter(prefix="/holdings")
 
-COLUMNS = ["Symbol", "EntryPrice", "EntryDate", "CurrentPrice"]
+COLUMNS = ["Symbol", "EntryPrice", "EntryDate", "CurrentPrice", "ExitRule"]
 
 
 class Holding(BaseModel):
@@ -21,6 +21,8 @@ class Holding(BaseModel):
     EntryPrice: float
     EntryDate: str
     CurrentPrice: float | None = None
+    # Filename in ExitRules_backup/; blank/None = the current exit_rules.md.
+    ExitRule: str | None = None
 
 
 class HoldingsPayload(BaseModel):
@@ -34,6 +36,8 @@ def get_holdings():
     df = pd.read_csv(HOLDINGS_PATH)
     if "CurrentPrice" not in df.columns:
         df["CurrentPrice"] = None
+    if "ExitRule" not in df.columns:
+        df["ExitRule"] = None
     # astype(object) first: assigning None into a still-float64 column
     # silently reverts it back to NaN instead of keeping None.
     df = df.astype(object).where(pd.notnull(df), None)

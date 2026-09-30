@@ -3,7 +3,7 @@
 ## Strategy Metadata
 
 Exit Strategy Name: Horizontal Breakout Exit Strategy v1
-Applies To: Horizontal Breakout Momentum (O'Neil Volume Test) (rules.md)
+Applies To: Horizontal Breakout Momentum (O'Neil Volume) (rules.md)
 specifically - every threshold below (the 10-day failed-breakout window,
 the 8% hard stop, the 3.0x/4.0x ATR trailing multipliers, the 20%-in-15-
 days big-winner override, the 90-day MaxHold) is sized for THIS entry's

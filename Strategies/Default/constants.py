@@ -15,6 +15,7 @@ BACKUP_DIR = os.path.normpath(os.path.join(APP_DIR, "..", "Rules_backup"))
 
 EXIT_RULES_PATH = os.path.join(APP_DIR, "exit_rules.md")
 EXIT_BACKUP_DIR = os.path.normpath(os.path.join(APP_DIR, "..", "ExitRules_backup"))
+GENERATED_EXIT_DIR = os.path.join(APP_DIR, "generated_exit_strategies")
 
 # All generated/runtime data (reports, caches, logs) lives under one
 # folder instead of scattered across Default/ - keeps the project root to

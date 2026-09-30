@@ -29,13 +29,22 @@ export default function Sell() {
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  const [exitVersions, setExitVersions] = useState<string[]>([])
   const [holdings, setHoldings] = useState<HoldingRow[]>([])
   const [holdingsLoaded, setHoldingsLoaded] = useState(false)
   const [checking, setChecking] = useState(false)
 
   const [report, setReport] = useState<ReportResponse | null>(null)
 
+  const refreshExitVersions = () =>
+    exitRulesApi
+      .listBackups()
+      .then((groups) => setExitVersions(Object.values(groups).flat().sort()))
+      .catch(() => {})
+
   useEffect(() => {
+    refreshExitVersions()
+
     exitRulesApi
       .get()
       .then((res) => {
@@ -89,6 +98,7 @@ export default function Sell() {
       .save(exitContent)
       .then((res) => {
         setMessage(res.backed_up_as ? `Saved exit_rules.md (previous version backed up as ${res.backed_up_as})` : 'Saved exit_rules.md')
+        refreshExitVersions()
       })
       .catch((err) => setError(err.message))
       .finally(() => setSaving(false))
@@ -107,7 +117,7 @@ export default function Sell() {
   }
 
   const addHolding = () => {
-    setHoldings((prev) => [...prev, { rowId: nextRowId++, Symbol: '', EntryPrice: '', EntryDate: '', CurrentPrice: '' }])
+    setHoldings((prev) => [...prev, { rowId: nextRowId++, Symbol: '', EntryPrice: '', EntryDate: '', CurrentPrice: '', ExitRule: '' }])
   }
 
   const removeHolding = (rowId: number) => {
@@ -244,7 +254,7 @@ export default function Sell() {
           <div className="flex flex-col gap-1.5">
             <div className="text-[15px] font-extrabold">Your holdings</div>
             <p className="max-w-[640px] text-[12.5px] leading-relaxed text-gray-500">
-              Add each open position below, then run the check. Holdings are saved to data/holdings.csv as you edit.
+              Add each open position below and optionally pick a saved exit rule version for it (default: the current exit_rules.md). Holdings are saved to data/holdings.csv as you edit.
             </p>
           </div>
 
@@ -256,6 +266,7 @@ export default function Sell() {
                   <th className="px-3 py-2 text-right text-[10.5px] font-bold uppercase tracking-wide text-gray-400">Entry Price</th>
                   <th className="px-3 py-2 text-left text-[10.5px] font-bold uppercase tracking-wide text-gray-400">Entry Date</th>
                   <th className="px-3 py-2 text-right text-[10.5px] font-bold uppercase tracking-wide text-gray-400">Current Price</th>
+                  <th className="px-3 py-2 text-left text-[10.5px] font-bold uppercase tracking-wide text-gray-400">Exit Rule</th>
                   <th className="w-10" />
                 </tr>
               </thead>
@@ -296,6 +307,23 @@ export default function Sell() {
                         value={h.CurrentPrice ?? ''}
                         onChange={(e) => updateHolding(h.rowId, 'CurrentPrice', e.target.value)}
                       />
+                    </td>
+                    <td className="p-[3px] px-2">
+                      <select
+                        className="w-full max-w-[220px] rounded-md border border-transparent bg-transparent px-1 py-1 font-mono text-[12px] hover:border-gray-200 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/10"
+                        value={h.ExitRule ?? ''}
+                        onChange={(e) => updateHolding(h.rowId, 'ExitRule', e.target.value)}
+                      >
+                        <option value="">Current exit_rules.md</option>
+                        {h.ExitRule && !exitVersions.includes(h.ExitRule) && (
+                          <option value={h.ExitRule}>{h.ExitRule} (missing)</option>
+                        )}
+                        {exitVersions.map((v) => (
+                          <option key={v} value={v}>
+                            {v.replace(/.md$/, '')}
+                          </option>
+                        ))}
+                      </select>
                     </td>
                     <td className="px-2 text-center">
                       <button

@@ -9,21 +9,15 @@ from google.genai import types
 
 load_dotenv()
 
-def generate_exit_strategy():
+def generate_exit_code(rules_content):
+    """Asks Gemini to turn exit rules markdown into resolve_exit() code and
+    returns the code as a string. Raises RuntimeError if no API key is set."""
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        print("Error: GEMINI_API_KEY environment variable not found.")
-        print("Please create a .env file and add your API key: GEMINI_API_KEY=your_key")
-        sys.exit(1)
-
-    try:
-        with open("exit_rules.md", "r", encoding="utf-8") as f:
-            rules_content = f.read()
-    except FileNotFoundError:
-        print("Error: exit_rules.md not found in the current directory.")
-        sys.exit(1)
-
-    print("Generating python exit logic from exit_rules.md...")
+        raise RuntimeError(
+            "GEMINI_API_KEY environment variable not found. "
+            "Create a .env file and add your API key: GEMINI_API_KEY=your_key"
+        )
 
     prompt = f"""
 You are an expert quantitative developer.
@@ -125,6 +119,23 @@ EXIT_RULES:
         code = code[3:]
     if code.endswith("```"):
         code = code[:-3]
+    return code
+
+
+def generate_exit_strategy():
+    try:
+        with open("exit_rules.md", "r", encoding="utf-8") as f:
+            rules_content = f.read()
+    except FileNotFoundError:
+        print("Error: exit_rules.md not found in the current directory.")
+        sys.exit(1)
+
+    print("Generating python exit logic from exit_rules.md...")
+    try:
+        code = generate_exit_code(rules_content)
+    except RuntimeError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
 
     with open("generated_exit_strategy.py", "w", encoding="utf-8") as f:
         f.write(code)

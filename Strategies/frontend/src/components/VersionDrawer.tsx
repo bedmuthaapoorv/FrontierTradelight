@@ -1,5 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import type { makeMarkdownFileApi } from '../api'
+
+const DEFAULT_WIDTH = 340
+const MIN_WIDTH = 260
+const MAX_WIDTH = 800
+const WIDTH_STORAGE_KEY = 'versionDrawerWidth'
 
 interface VersionDrawerProps {
   api: ReturnType<typeof makeMarkdownFileApi>
@@ -78,6 +83,14 @@ export default function VersionDrawer({
   const [renameValue, setRenameValue] = useState('')
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [width, setWidth] = useState(() => {
+    const saved = Number(localStorage.getItem(WIDTH_STORAGE_KEY))
+    return saved >= MIN_WIDTH && saved <= MAX_WIDTH ? saved : DEFAULT_WIDTH
+  })
+
+  useEffect(() => {
+    localStorage.setItem(WIDTH_STORAGE_KEY, String(width))
+  }, [width])
 
   const loadGroups = () => {
     api
@@ -179,8 +192,38 @@ export default function VersionDrawer({
 
   const groupKeys = Object.keys(filteredGroups)
 
+  const startResize = (e: ReactPointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startWidth = width
+    const maxWidth = Math.min(MAX_WIDTH, window.innerWidth - 320)
+    const onMove = (ev: PointerEvent) => {
+      // Drawer is docked on the right, so dragging left grows it.
+      setWidth(Math.max(MIN_WIDTH, Math.min(maxWidth, startWidth + (startX - ev.clientX))))
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+    }
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'col-resize'
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
+
   return (
-    <div className="flex w-[340px] flex-shrink-0 flex-col border-l border-gray-200 bg-white">
+    <div
+      className="relative flex flex-shrink-0 flex-col border-l border-gray-200 bg-white"
+      style={{ width }}
+    >
+      <div
+        onPointerDown={startResize}
+        onDoubleClick={() => setWidth(DEFAULT_WIDTH)}
+        title="Drag to resize (double-click to reset)"
+        className="absolute -left-1 top-0 z-10 h-full w-2 cursor-col-resize hover:bg-accent/20 active:bg-accent/30"
+      />
       <div className="flex flex-shrink-0 items-center justify-between border-b border-gray-100 px-4 py-3.5">
         <div className="text-[13.5px] font-bold">Version history</div>
         <button

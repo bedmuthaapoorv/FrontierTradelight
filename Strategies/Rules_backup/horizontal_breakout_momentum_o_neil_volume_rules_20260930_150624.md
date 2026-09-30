@@ -2,7 +2,7 @@
 
 ## Strategy Metadata
 
-Strategy Name: Horizontal Breakout Momentum (O'Neil Volume Test)
+Strategy Name: Horizontal Breakout Momentum (O'Neil Volume)
 Market: India (NSE/BSE)
 Timeframe: Daily
 Holding Period: Trend Trade (1-90 Days)

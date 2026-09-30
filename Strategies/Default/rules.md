@@ -2,7 +2,7 @@
 
 ## Strategy Metadata
 
-Strategy Name: Trendline Bounce v1
+Strategy Name: Trend-continuation Pullback Mean Reversion Strategy
 Market: India (NSE/BSE)
 Timeframe: Daily
 Holding Period: Swing Trade (5-40 Days)
@@ -24,264 +24,378 @@ computable from OHLCV + SectorRank + MarketBreadth alone.
 
 ## Strategy Rationale
 
-The previous "trendline" strategy (Mean Reversion Strategy v5) was never
-actually a trendline strategy - its entry approximated "near a trendline"
-as "price near its own recent low," which is mean reversion, not a real
-sloped support line. It also proved fragile: ~80%+ of its trades were
-stopped out shortly after entry, and a real, geometrically valid trendline
-was never actually fit or tested.
+v1 detected a trendline using a single rigid 100-day window, required an
+exact fit (any single point could invalidate the whole line), and
+disqualified a line forever if price ever broke below it at any point in
+the lookback - even if price later reclaimed it. This missed trendlines
+that were only visible "zooming out" to a longer window, and treated a
+resolved break-and-reclaim the same as an active breakdown.
 
-This version builds a genuine trendline the way it is actually done
-algorithmically: detect confirmed swing-low pivots in the price history,
-connect two of them with a straight line, and require that line to be
-(a) rising, (b) formed from pivots genuinely far enough apart in time to
-reflect an established trend (not two adjacent dips), and (c) unbroken
-since it formed. The entry signal is a classic trendline-bounce: price
-dips down to touch that line and closes back above it the same day -
-buying the bounce off a real, validated support line, not just "a low
-price."
+v2 fixes this with three changes, each targeting one specific failure:
 
-An earlier draft of this v1 spec picked the two MOST RECENT confirmed
-pivots with no minimum spacing between them - which, whenever those two
-pivots happened to be close together in time, degenerated back into
-exactly the old mistake: "price near its own most recent low," just with
-slope arithmetic on top. The `i2 - i1 >= 25 trading days` rule in Rule 1
-below exists specifically to close that loophole - see Rule 1's notes.
+1. **Multiple lookback windows, not one.** Tries 250/150/100/60 trading
+   days (longest first) and keeps whichever window reveals a qualifying
+   line with the most touches - a trendline only visible over 6+ months
+   is no longer invisible just because a rigid 100-day box happened not
+   to contain it.
+2. **Robust, outlier-tolerant fitting.** Instead of requiring every pivot
+   to lie exactly on the line, iteratively drops up to ~20% of pivots
+   that sit egregiously below the candidate line before finalizing the
+   fit - the same way a chartist mentally discounts one outlier wick
+   instead of throwing out an otherwise-clean trendline.
+3. **Current-structure-only breakdown check.** Only the most recent 3
+   trading days are checked for a breakdown, not the entire lookback - a
+   break from weeks ago that price has since reclaimed no longer
+   permanently disqualifies the line.
 
-This is a fresh strategy line, not a v-increment of Breakout Momentum -
-it trades a fundamentally different setup (pullback-to-a-rising-line vs.
-breakout-to-a-new-high) and is not expected to produce similar trade
-counts, win rates, or hold times. Back-test independently before comparing
-it to Breakout Momentum v6's numbers.
+v2's 3-year backtest returned +15.88% total / +5.06%/yr CAGR, but a
+Deep-Dive-style year-by-year and leave-one-year-out analysis of that
+backtest showed the return was fragile and the risk was real: excluding
+2024 alone flips the whole result from +5.06% CAGR to -3.13% CAGR (one
+year carried the entire strategy), and the max drawdown was -20.6%,
+concentrated in a sustained slide from Aug 2024 through the end of the
+backtest - 139 trades were entered during that window, only a 30.2% win
+rate, and 133 of those 139 (96%) exited via the trailing stop rather than
+working. That's the signature of the entry admitting weaker setups than
+it should, not an exit-side problem.
 
----
+v3 responds by tightening the trendline quality bar - the two changes in
+Rule 3 step 4 (outlier tolerance cut from 20% to 10% of pivots) and step
+6 (minimum touches raised from 3 to 4) - trading some of v2's broader
+detection for higher-conviction lines, in direct response to that
+drawdown evidence. Everything else (bounce confirmation trigger, RSI
+pullback zone, trend context, sector/breadth filters) carries over
+unchanged - the core "passive filter + active trigger" design already
+proved out; only the trendline detection's tolerance for weak lines
+needed tightening.
 
-## Swing-Low Pivot Detection (Shared Definition)
+v4 fixes Rule 1's liquidity floor, which was a flat `MA(Volume, 20) >=
+100000` share-count threshold carried over unexamined since v1, with no
+justification ever recorded for the number (unlike, say, Rule 8's
+MarketBreadth cutoff). A raw share count is the wrong unit for a liquidity
+floor: 100,000 shares/day means very different things for a Rs.50 stock
+and a Rs.5,000 stock, even though both would pass the identical threshold.
+Replaced with a turnover floor (MA(Volume * Close, 20), i.e. average daily
+traded value in Rupees) - see Rule 1 for the actual number and how it was
+derived from this project's cached universe data, not assumed. No other
+rule changed from v3.
 
-A trading day at integer position `i` in the OHLCV history (0 = oldest row)
-is a **confirmed swing-low pivot** if and only if:
-
-```
-Low[i] < Low[i-1]  AND  Low[i] < Low[i-2]  AND  Low[i] < Low[i-3]
-AND
-Low[i] < Low[i+1]  AND  Low[i] < Low[i+2]  AND  Low[i] < Low[i+3]
-```
-
-i.e. its Low is strictly lower than the Low on each of the 3 trading days
-immediately before AND after it (a 7-bar fractal low).
-
-Notes:
-- This needs 3 trading days of data AFTER `i` to confirm, so the most
-  recent 3 rows of the dataset can never themselves be confirmed pivots
-  yet - that is correct and expected, not a bug. A trendline is built from
-  already-confirmed history, never from today's still-unconfirmed bar.
-- Search for pivots only within the most recent 90 trading days (the
-  "pivot lookback window"), excluding the last 3 rows (unconfirmable).
-  Older pivots are deliberately ignored - a support line fit from pivots
-  many months old is no longer relevant to current price action. This is
-  wider than a bare "last 60 days" would be, specifically to give Rule 1's
-  minimum-spacing requirement below enough history to find a valid pair in.
-- If fewer than 2 confirmed pivots exist in that window, this stock fails
-  Rule 1 below (insufficient trendline data) - do not fall back to a
-  shorter window or a single point.
+v5 is a rename only, no rule changed from v4. "Trendline Bounce
+Confirmation" described the entry's mechanism (find a trendline, confirm
+a bounce off it) but not its underlying character: Rule 5's RSI 35-55
+band, Rule 6's cap on chasing a bounce that's already run, and the
+matching exit strategy's fixed target at the prior swing high are all
+mean-reversion patterns, not trend-continuation ones - the entry only
+takes this mean-reversion-style bounce when Rule 2's uptrend context is
+already confirmed, so this is a trend-following pullback strategy using
+a mean-reversion trigger, not unconditional/countertrend mean reversion.
+"Mean Reversion Strategy" names it by that character instead of by
+mechanism.
 
 ---
 
 ## Mandatory Filters
 
-All rules below MUST pass, in order (later rules may depend on the
-trendline computed while checking Rule 1 - if Rule 1 fails, skip
-straight to rejection; do not attempt Rules 2-4).
+All rules below MUST pass.
 
 ---
 
-### Rule 1: A Valid, Rising, Unbroken Trendline Exists
+### Rule 1: Minimum Liquidity Floor (v4 - turnover-based)
 
 Description:
-Build the trendline from two confirmed swing-low pivots (see the shared
-definition above) that are genuinely far enough apart in time to reflect
-an established trend, and validate the line is a real, current, ascending
-support line - not a flat, falling, or already-broken one.
-
-Condition (all of the following, computed once per stock per day):
-
-1. Let P2 = (i2, Low[i2]) be the MOST RECENT confirmed swing-low pivot in
-   the last 90 trading days (excluding the last 3, unconfirmable rows).
-2. Let P1 = (i1, Low[i1]) be the NEAREST confirmed pivot before P2, in the
-   same 90-day window, such that `i2 - i1 >= 25` (at least 25 trading days
-   before P2 - roughly 5 calendar weeks). Skip over any earlier confirmed
-   pivot that is closer than that to P2 - it is too recent to establish a
-   real trend, it would just be two adjacent dips.
-   If no pivot in the window satisfies `i2 - i1 >= 25`, reject with
-   "No valid rising trendline" (insufficient trendline data) - do not
-   fall back to a closer pair.
-3. `Slope = (Low[i2] - Low[i1]) / (i2 - i1)`. Require `Slope > 0`
-   (the line must be rising - a flat or falling line is not a support
-   line worth buying a bounce off of).
-4. Define the trendline's value at any position `j` as:
-   `TL(j) = Low[i2] + Slope * (j - i2)`
-5. Line must be unbroken since P2 formed: for every trading day `j` from
-   `i2 + 1` up to yesterday (today excluded, checked separately in Rule 2),
-   require `Close[j] >= TL(j) - (0.75 * ATR(14)[j])`. If Close closed
-   more than 0.75x that day's ATR(14) below the line on any day since P2,
-   the line is considered broken - reject (a genuinely broken trendline
-   is not a valid support line any more, regardless of what price does
-   today).
-
-If any of the checks above fails, reject with "No valid rising trendline."
-
-Notes:
-- The `i2 - i1 >= 25` minimum spacing is the key difference between this
-  being a genuine trendline and just "price bounced off its own most
-  recent low" (which is mean reversion wearing a trendline's clothes -
-  see the Strategy Rationale). Two swing lows a handful of days apart are
-  noise, not a trend; requiring real separation forces the line to reflect
-  an actual multi-week pattern of rising lows.
-- P1 is chosen as the NEAREST pivot satisfying the spacing rule (not the
-  oldest, not a fixed distance) so there is still exactly one deterministic
-  candidate line per stock per day - this keeps the same "no ambiguity"
-  property the original 2-most-recent-pivots version had, it just adds one
-  more condition to which pivot counts as P1.
-- The 0.75x ATR tolerance exists so one day of ordinary noise piercing the
-  line by a fraction of a percent doesn't invalidate an otherwise-intact
-  trendline - it must be a real, ATR-scaled breach to count as broken.
-
----
-
-### Rule 2: Today Is a Genuine Bounce Off the Trendline
-
-Description:
-Price must have actually touched (or come very close to) the trendline
-today and closed back above it - the classic trendline-bounce candle,
-not a stock merely drifting somewhere near the line.
-
-Condition (using `TL(today)` from Rule 1, where `today` is the most
-recent row's position):
-
-```
-Low[today]   <= TL(today) * 1.02      (today's low actually tested the line)
-AND
-Close[today] >= TL(today)             (closed back at/above the line)
-AND
-Close[today] >  Open[today]           (an up/bounce candle, not a stall)
-AND
-Close[today] <= TL(today) * 1.06      (still close to the line - not
-                                        chasing a move that already ran
-                                        well away from it)
-```
-
-Notes:
-- `Low[today] <= TL(today) * 1.02` allows the day's low to have undershot
-  the line very slightly (ordinary intraday noise / a small false break)
-  while still counting as a genuine touch.
-- The `1.06` ceiling on Close keeps entries close to the actual support
-  test - if price already closed 6%+ above the line, the bounce already
-  happened and this is a chase, not a bounce entry.
-
----
-
-### Rule 3: Broader Trend Backdrop Still Intact
-
-Description:
-The trendline bounce should be a pullback WITHIN an intact intermediate/
-long-term uptrend, not a bounce inside a stock that has already turned
-down structurally. Deliberately does NOT require Close > MA(20), since a
-genuine pullback to a rising trendline routinely dips below the 20-day
-average - that is the whole point of a pullback entry.
+Reject illiquid stocks so signals are meaningful and exits are executable
+without slippage.
 
 Condition:
 
-```
-Close > MA(126)
-AND
-MA(50) > MA(126)
-```
-
-Notes:
-- Confirms the medium-term average is still above the long-term average
-  and price is still above its 6-month average - the bigger trend is
-  intact even though price has pulled back short-term.
-
----
-
-### Rule 4: Momentum Is in a Pullback Zone, Not Crashing or Still Extended
-
-Description:
-RSI should reflect a genuine pullback - cooled off from overbought, but
-not in a momentum crash. This is a different RSI zone from a breakout
-entry (which wants RSI already elevated) precisely because this is the
-opposite setup: buying weakness within a trend, not buying strength.
-
-Condition:
-
-```
-35 <= Daily_RSI(14) <= 55
-```
-
-Notes:
-- Below 35 risks catching a genuine breakdown rather than a routine
-  pullback; above 55 means the stock has not meaningfully pulled back at
-  all and this would just be chasing continued strength (that setup is
-  what Breakout Momentum v6 already covers).
-
----
-
-### Rule 5: Minimum Liquidity Floor
-
-Description:
-Same liquidity safety floor used by every strategy version in this
-project - reject illiquid stocks so exits are executable without slippage.
-
-Condition:
-
-```
-MA(Volume, 20) >= 100000
+MA(Volume * Close, 20) >= 50000000
 AND
 Close >= 50
-```
 
----
-
-### Rule 6: Sector Strength
-
-Description:
-Same sector filter used by every strategy version in this project.
-
-Condition:
-
-```
-SectorRank <= 10
-```
-
----
-
-### Rule 7: Market Breadth Filter
-
-Description:
-Pause new entries when the broader market is itself broad-based weak,
-even if this individual stock's trendline setup looks valid in isolation.
-
-Condition:
-
-```
-MarketBreadth >= 40
-```
+Where:
+MA(Volume * Close, 20) = the 20-day average of daily traded value in
+Rupees (each day's Volume times that day's Close, averaged over the last
+20 trading days) - i.e. turnover, not raw share count.
 
 Notes:
-- Set slightly looser than Breakout Momentum v6's 45: a pullback-to-
-  support entry is inherently a lower-momentum, counter-trend-within-a-
-  trend setup, so it does not need quite as strong a broad-market backdrop
-  as a breakout-to-new-highs entry does. Re-validate this threshold
-  against this strategy's own backtest results rather than assuming it
-  transfers from Breakout Momentum's number.
+- v3 and earlier used a flat `MA(Volume, 20) >= 100000` share-count floor,
+  unexamined since v1 with no recorded justification for the number.
+  Turnover (Volume x Close), not raw share count, is what actually
+  determines whether a position can be entered/exited without slippage -
+  a flat share-count floor treats a Rs.50 stock trading 200k shares/day
+  the same as a Rs.5,000 stock trading 200k shares/day, even though the
+  second one has 100x the actual Rupee liquidity.
+- Rs. 5 crore/day (50000000) was checked against this project's actual
+  cached universe data, not assumed: even the weakest 5% of stocks by
+  turnover clear roughly Rs. 110 crore/day in that data, ~20x this floor -
+  consistent with the original share-count version's intent ("should
+  rarely bind, it's a safety floor"), just expressed in units that mean
+  the same thing across different price levels.
+- Close >= 50 is kept as a separate floor against low-priced/penny-stock
+  noise, not a liquidity proxy - a stock can clear the turnover bar above
+  while still being a sub-Rs.50 stock with erratic tick-level behavior.
+
+---
+
+### Rule 2: Uptrend Context
+
+Description:
+A pullback to support only means something if the stock is actually in an
+uptrend. Requires price above a rising medium-term average.
+
+Condition:
+
+Close > MA(100)
+AND
+MA(100) > MA(100)[-10]
+
+Notes:
+- MA(100)[-10] means the 100-day moving average's value 10 trading days
+  ago - requiring the current MA to be higher than that confirms the
+  average itself is rising, not flat or falling.
+
+---
+
+### Rule 3: Ascending Trendline Detection
+
+Description:
+Find a genuine rising support trendline under the stock's recent price
+action - not a placeholder, and not an overly rigid geometric search
+either. A real trendline is often only visible when you zoom out, and a
+single exact-fit line that any one pullback can invalidate is not how a
+chartist reads a chart. This rule requires: trying multiple lookback
+windows (not committing to one arbitrary window), a fit that tolerates a
+minority of points as noise instead of requiring every point to lie
+exactly on the line, and a breakdown check based on CURRENT structure
+(is the line broken right now?) rather than "was it ever broken at any
+point in the lookback." This is the core, most failure-prone rule in this
+strategy: implement the actual algorithm below exactly, do not substitute
+a fixed/hardcoded distance value for any part of it.
+
+Algorithm (implement exactly):
+
+1. Try lookback windows of 250, 150, 100, and 60 trading days, longest
+   first (skip any window longer than the available history). For each
+   window, run steps 2-7 below; keep whichever window produces a
+   qualifying line with the most touches (a longer window that reveals a
+   trendline invisible in a shorter one should win).
+
+2. Within the window, find pivot lows: a day is a pivot low if its `low`
+   is less than or equal to the `low` of the 4 trading days before AND
+   the 4 trading days after it (scipy.signal.argrelextrema with order=4,
+   or equivalent standard local-extrema detection). Skip this window if
+   fewer than 3 pivot lows are found.
+
+3. Fit an initial line (slope, intercept) via ordinary least-squares
+   regression (day-index vs. low price) using ALL pivot lows in the
+   window as points.
+
+4. Robust refinement (tolerate a small amount of noise, not a lax fit):
+   repeat up to `ceil(0.1 * number_of_pivots)` times - find the pivot low
+   with the most negative residual (furthest BELOW the current line). If
+   that residual is worse than -1.0x ATR(14), drop that pivot and refit
+   the line on the remaining pivots; otherwise stop early (no more
+   meaningful outliers). This lets a single anomalous dip get excluded
+   rather than distorting or invalidating the whole line, the same way a
+   chartist mentally discounts one outlier wick - but only one, not up to
+   a fifth of all the pivots found. (v2 allowed dropping up to 20% of
+   pivots here; backtesting showed this was letting through lines with
+   real conviction problems - most of the resulting trades got stopped
+   out quickly rather than working. 10% keeps the "tolerate one outlier"
+   benefit without diluting the line's overall quality.)
+
+5. Discard this window if the final slope is non-positive (must be
+   ascending).
+
+6. Count how many pivot lows (from the original full set in step 2, not
+   just the ones kept after step 4's trimming) lie within 1.0x ATR(14) of
+   the final line's projected value at their day-index - these are the
+   line's "touches." Require at least 4 (raised from v2's 3 - a fourth
+   confirmed touch is meaningfully more evidence of genuine, repeated
+   support than three; this is a general tightening in response to v2's
+   Deep Dive analysis showing a long, mostly-stopped-out drawdown, not a
+   claim that 3-touch lines specifically were the failures - that
+   per-touch breakdown wasn't measured). If fewer than 4, this window
+   doesn't qualify.
+
+7. Breakdown check - CURRENT structure only, not lifetime history: look
+   only at the most recent 3 trading days in the window (i.e. up to and
+   including today). If ALL 3 of those days' closes are more than 1.5x
+   ATR(14) below the line's projected value on their respective day, the
+   trendline is considered currently broken and this window doesn't
+   qualify. A breakdown earlier in the window that price has since
+   reclaimed does NOT disqualify the line - only an active, ongoing break
+   does.
+
+Condition:
+
+TrendlineTouches >= 3
+AND
+TrendlineSlope > 0
+AND
+NOT CurrentlyBrokenBelowLine(last 3 trading days, tolerance = 1.5x ATR(14))
+
+Notes:
+- ATR(14) should be computed once (today's value) and used as the unit of
+  distance throughout steps 4, 6, and 7 - not recomputed per pivot or per
+  window.
+- If none of the four windows produce a qualifying line, this rule fails
+  for the stock - it has no ascending trendline on any timeframe tried.
+- The overall insufficient-data check at the top of the function must be
+  `if len(df) < 60`, NOT `< 250`. 250 is only the longest of the four
+  window sizes tried, not a blanket minimum - a stock with, say, 120 days
+  of history should still be evaluated (it just won't be able to try the
+  250 or 150 windows, only 100 and 60). Requiring 250 days unconditionally
+  would incorrectly reject every stock that can only use the shorter
+  fallback windows, defeating the entire point of trying multiple windows.
+- Coordinate system: if you slice a window as `subset = df.iloc[-window:]`
+  and reset its index to 0..window-1 (or otherwise fit the line using
+  index positions local to that slice), then "today" in that line's own
+  coordinate system is `window - 1`, NOT `len(df) - 1`. This matters for
+  Rule 4 (which evaluates the trendline "today") and for the
+  ClosenessScore's distance-from-trendline term: both must project the
+  line at `window - 1`, using the SAME window that produced the winning
+  line - using the full dataframe's global index instead silently
+  misprojects the line whenever a fallback window shorter than the full
+  history is the one that qualified. (If instead you keep pivot/day
+  indices in the FULL dataframe's global coordinate system throughout -
+  i.e. never reset the sliced window's index - this concern doesn't
+  apply, as long as you are consistent about it everywhere: fitting,
+  touch-counting, breakdown-checking, and "today"'s projection must all
+  use the same coordinate system.)
+
+Reference implementation (implement this exactly - variable names matter,
+they disambiguate the single most common mistake made when implementing
+this rule):
+
+```python
+# pivot_indices: the array positions (within `window`) of every pivot low
+# found in step 2. This is the ONLY array ever used for touch-counting in
+# step 6 below. Never substitute subset['low'].values (every day in the
+# window) for pivot_indices when counting touches - that counts ordinary
+# days drifting near the line as "touches," which is a different, far
+# weaker rule than requiring genuine reversal points to touch the line.
+pivot_indices = ...  # from argrelextrema, step 2
+
+# fit_indices / fit_lows: the working set used ONLY for fitting the line
+# (step 3-4). This set shrinks as outliers get dropped in step 4.
+fit_indices = pivot_indices.copy()
+fit_lows = lows_at(pivot_indices)
+# ... robust refinement loop mutates fit_indices/fit_lows, NOT pivot_indices ...
+slope, intercept = final fitted line from fit_indices/fit_lows
+
+# Step 6 - touches: iterate pivot_indices (the ORIGINAL full set from step
+# 2), never fit_indices (already-trimmed) and never every day in the
+# window.
+touches = 0
+for i in pivot_indices:               # <-- pivot_indices, not fit_indices,
+                                       #     not subset['low'].values / range(window)
+    projected = slope * i + intercept
+    if abs(low_at(i) - projected) <= 1.0 * atr14:
+        touches += 1
+```
+
+---
+
+### Rule 4: Bounce Confirmation (Active Trigger)
+
+Description:
+A stock sitting near its trendline is not a signal on its own - this rule
+requires evidence the bounce is actually happening today, not just that
+the stock is in the right location. This is what separates this strategy
+from the failed prior version, which had no confirmation trigger at all.
+
+Condition:
+
+Low <= TrendlineProjectedValueToday + (1.0 * ATR(14))
+AND
+Close > Close[-1]
+AND
+Volume[-1] >= 1.2 * MA(Volume, 20)
+
+Where:
+TrendlineProjectedValueToday = the trendline found in Rule 3, evaluated at
+today's day-index (see the Coordinate system note in Rule 3).
+
+Notes:
+- "Low <= trendline + 1x ATR" means today's low came within one ATR of the
+  trendline (a touch or near-touch), using the SAME trendline and ATR
+  computed in Rule 3 - do not re-detect the trendline independently here.
+- Close > Close[-1] (today closed higher than yesterday) is the minimum
+  bar for "this looks like a bounce, not a breakdown."
+- The volume requirement (today's volume >= 1.2x its 20-day average)
+  screens out low-conviction, low-volume drifts that happen to close up.
+
+---
+
+### Rule 5: RSI Pullback Zone
+
+Description:
+Confirms this is a genuine pullback within an uptrend (neutral-to-mildly-
+weak momentum), not a stock that's already extended or one that's broken
+down into oversold territory.
+
+Indicator:
+RSI(14) on Daily timeframe
+
+Condition:
+
+35 <= Daily_RSI <= 55
+
+Notes:
+- Deliberately below-neutral, unlike a breakout strategy's RSI band -
+  a pullback to support should show cooled-off, not strong, momentum
+  right before the bounce.
+- Below 35 is excluded because RSI that oversold more often signals a
+  genuine breakdown in progress than a healthy pullback.
+
+---
+
+### Rule 6: Not Already Extended Off the Low
+
+Description:
+Avoid entering after the bounce has already happened - this strategy wants
+the start of a bounce off support, not a stock that already ran 10-15% off
+its recent low before the signal fired.
+
+Condition:
+
+Close <= 1.15 * Close[-10]
+
+---
+
+### Rule 7: Sector Strength
+
+Description:
+Stock must belong to a top-performing sector, using the SectorRank already
+computed by the backtester/screener.
+
+Condition:
+
+SectorRank <= 10
+
+---
+
+### Rule 8: Market Breadth Filter
+
+Description:
+Pause new entries when the broader market is itself broad-based weak, even
+if this individual stock's setup looks fine in isolation.
+
+Condition:
+
+MarketBreadth >= 45
+
+Notes:
+- MarketBreadth is the % of the entire universe trading above its own
+  50-day moving average, computed once per day - use the market_breadth
+  parameter directly, do not compute it from this stock's own data.
 
 ---
 
 ## Rejection Rules
 
-Reject stock if ANY mandatory filter fails. Rule 1 must be evaluated
-first; if it fails, do not evaluate Rules 2-4 (there is no trendline to
-check a bounce or backdrop against).
+Reject stock if ANY mandatory filter fails.
 
 ---
 
@@ -294,33 +408,30 @@ After filtering, rank candidates.
 Score =
 30% Trendline_Quality_Score
 +
-25% Sector_Strength_Score
+25% Bounce_Strength_Score
 +
-25% Bounce_Precision_Score
+20% Sector_Strength_Score
 +
-20% RSI_Pullback_Score
+15% RSI_Pullback_Score
++
+10% Proximity_Score
 
 Where:
 
-Trendline_Quality_Score = `min(100, Slope_As_Pct_Per_Day * 4000)`, where
-`Slope_As_Pct_Per_Day = Slope / Low[i2]` (the trendline's slope expressed
-as a % of price per trading day, so it is comparable across stocks at
-different price levels).
-(A very shallow/flat rising line scores low; a moderately steep, healthy
-uptrend line scores higher, capped at 100 so an extreme/unsustainable
-slope does not dominate the score.)
+Trendline_Quality_Score = min(100, TrendlineTouches * 20)
+(3 touches = 60 points, 5+ touches = 100 points)
+
+Bounce_Strength_Score = min(100, (Volume[-1] / MA(Volume, 20)) * 50)
+(1.2x average volume = 60 points, 2.0x or more = 100 points)
 
 Sector_Strength_Score = max(0, 100 - (SectorRank - 1) * 10)
 (Rank 1 = 100, declining 10 points per rank)
 
-Bounce_Precision_Score = `max(0, 100 - ((Close[today] - TL(today)) / TL(today) * 100) * 25)`
-(Close exactly at the trendline = 100 points, 4% above it = 0 points -
-rewards a tighter, more precise bounce over one that already ran further
-from the line.)
+RSI_Pullback_Score = max(0, 100 - abs(Daily_RSI - 45) * 5)
+(Rewards RSI closest to 45, the middle of the pullback zone)
 
-RSI_Pullback_Score = `max(0, 100 - abs(Daily_RSI - 45) * 4)`
-(Rewards RSI closest to 45, the middle of the pullback zone; 0 points at
-RSI 20 or 70.)
+Proximity_Score = max(0, 100 - (DistanceFromTrendlineInATR * 100))
+(Touching the line exactly = 100 points, a full ATR away = 0 points)
 
 Higher score is better.
 
@@ -337,46 +448,23 @@ Return:
 - Current Price
 - Ideal Entry Price Low
 - Ideal Entry Price High
-- Ideal Exit Price
-- Swing Duration (Days)
-- Trendline Value (Today)
-- Trendline Slope (% per day)
 - Daily RSI(14)
+- Volume[-1]
 - 20D Average Volume
+- Trendline Touches
+- Distance From Trendline (ATR units)
 - Rank Score
 
 Where:
 
-Ideal Entry Price Low = Trendline Value (Today) (buying right at the
-support line is the ideal fill - matches what the setup is actually
-betting on).
+Ideal Entry Price Low = Close
+Ideal Entry Price High = Close * 1.01
 
-Ideal Entry Price High = Close (today's signal close - the realistic
-worst-case fill, since the backtester itself enters at this exact close
-price).
-
-Ideal Exit Price = Ideal Entry Price Low + 2.5 * ATR(14) (an illustrative
-target matching the trailing-stop distance used by this entry's paired
-exit strategy - the actual exit has no fixed take-profit and lets the
-trailing stop run winners further, so this is a "reasonable swing target"
-for display, not a cap).
-
-Swing Duration (Days) = "5-40" (the Holding Period range from this
-strategy's metadata above - a real trade's actual exit day is whatever
-the ATR trailing stop / 30-day early-failure cut in exit_rules.md
-produces, this column is only the expected planning range for manual
-order placement).
-
-Notes:
-- Unlike Breakout Momentum v6's entry range (which spans UP TOWARD a
-  ceiling being broken), this range spans from the ideal support-line
-  fill UP TO today's actual close, because a bounce entry's best-case
-  price is the line itself and its worst case is wherever price already
-  closed today.
-- Do NOT use this band, the Ideal Exit Price, or the Swing Duration to
-  change entry/exit logic anywhere else (Mandatory Filters, Ranking
-  Rules, backtester) - they are display-only suggestions for manual
-  order placement, same as in prior strategy versions.
+This mirrors what the backtester actually does (enters at Close on the
+signal day) while giving a small band, since a real fill a moment after
+the signal is rarely at the exact closing tick. Do not use this band to
+change entry logic anywhere else (Mandatory Filters, Ranking Rules,
+backtester) - it is a display-only suggestion for manual order placement.
 
 Sort:
 

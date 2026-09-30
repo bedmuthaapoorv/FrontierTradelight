@@ -9,12 +9,14 @@ data available as of today, and reports whether it would have already fired.
 
 import argparse
 import datetime
+import importlib.util
+import os
 import sys
 import warnings
 
 import pandas as pd
 
-from constants import HOLDINGS_PATH, SELL_REPORT_PATH
+from constants import EXIT_BACKUP_DIR, GENERATED_EXIT_DIR, HOLDINGS_PATH, SELL_REPORT_PATH
 from nse_utils import fetch_stock_history
 
 warnings.filterwarnings("ignore")
@@ -24,7 +26,41 @@ def load_holdings(path):
     df = pd.read_csv(path, parse_dates=["EntryDate"])
     if "CurrentPrice" not in df.columns:
         df["CurrentPrice"] = None
+    if "ExitRule" not in df.columns:
+        df["ExitRule"] = None
     return df.to_dict("records")
+
+
+def load_exit_module(exit_rule):
+    """Returns the module holding resolve_exit()/describe_state() for a
+    holding. A blank exit_rule means the current generated_exit_strategy.py;
+    otherwise it's a filename in ExitRules_backup/, compiled on first use
+    into generated_exit_strategies/<name>.py and reused from then on (so
+    only the first check with a given saved version costs a Gemini call)."""
+    if exit_rule is None or pd.isna(exit_rule) or not str(exit_rule).strip():
+        import generated_exit_strategy
+        return generated_exit_strategy
+
+    exit_rule = os.path.basename(str(exit_rule).strip())
+    module_name = os.path.splitext(exit_rule)[0]
+    module_path = os.path.join(GENERATED_EXIT_DIR, module_name + ".py")
+    rules_path = os.path.join(EXIT_BACKUP_DIR, exit_rule)
+    if not os.path.exists(rules_path):
+        raise FileNotFoundError(f"Exit rule version {exit_rule} not found in ExitRules_backup.")
+
+    if not os.path.exists(module_path) or os.path.getmtime(module_path) < os.path.getmtime(rules_path):
+        from generate_exit_strategy import generate_exit_code
+
+        with open(rules_path, "r", encoding="utf-8") as f:
+            code = generate_exit_code(f.read())
+        os.makedirs(GENERATED_EXIT_DIR, exist_ok=True)
+        with open(module_path, "w", encoding="utf-8") as f:
+            f.write(code)
+
+    spec = importlib.util.spec_from_file_location(f"exit_{module_name}", module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def fetch_history(symbol, entry_date, lookback_days=200):
@@ -71,11 +107,12 @@ def apply_live_price(full_df, current_price):
     return pd.concat([full_df, new_row])
 
 
-def evaluate_holding(symbol, entry_price, entry_date, full_df, current_price=None):
+def evaluate_holding(symbol, entry_price, entry_date, full_df, current_price=None, exit_module=None):
     """Mirrors backtest.py's _open_and_resolve_trade, but with today as the
     open-ended right edge instead of a fixed backtest end date, and without
     the RangeEnd fallback - a holding with no exit signal yet is just a hold."""
-    import generated_exit_strategy
+    if exit_module is None:
+        import generated_exit_strategy as exit_module
 
     full_df = apply_live_price(full_df, current_price)
 
@@ -96,7 +133,7 @@ def evaluate_holding(symbol, entry_price, entry_date, full_df, current_price=Non
     return_pct = (current_price - entry_price) / entry_price * 100
 
     try:
-        exit_result = generated_exit_strategy.resolve_exit(entry_price, entry_date, signal_history, future)
+        exit_result = exit_module.resolve_exit(entry_price, entry_date, signal_history, future)
     except Exception as e:
         exit_result = None
         print(f"Error evaluating exit for {symbol}: {e}")
@@ -115,19 +152,17 @@ def evaluate_holding(symbol, entry_price, entry_date, full_df, current_price=Non
     return {
         "Symbol": symbol,
         "Recommendation": "HOLD",
-        "Reason": describe_hold_reason(entry_price, entry_date, signal_history, future),
+        "Reason": describe_hold_reason(entry_price, entry_date, signal_history, future, exit_module),
         "CurrentPrice": round(current_price, 2),
         "ReturnPct": round(return_pct, 2),
     }
 
 
-def describe_hold_reason(entry_price, entry_date, signal_history, future):
+def describe_hold_reason(entry_price, entry_date, signal_history, future, exit_module):
     """Turns generated_exit_strategy.describe_state()'s raw numbers into a
     human-readable explanation of how close each exit condition is to
     firing, instead of just "not met yet"."""
-    import generated_exit_strategy
-
-    describe_state = getattr(generated_exit_strategy, "describe_state", None)
+    describe_state = getattr(exit_module, "describe_state", None)
     if describe_state is None:
         return "Exit condition not met yet."
 
@@ -158,8 +193,10 @@ def screen_holdings(holdings):
         entry_price = float(holding["EntryPrice"])
         entry_date = holding["EntryDate"]
         current_price = holding.get("CurrentPrice")
+        exit_rule = holding.get("ExitRule")
 
         try:
+            exit_module = load_exit_module(exit_rule)
             full_df = fetch_history(symbol, entry_date.date() if hasattr(entry_date, "date") else entry_date)
             if full_df is None:
                 results.append({
@@ -171,7 +208,7 @@ def screen_holdings(holdings):
                 })
                 continue
 
-            results.append(evaluate_holding(symbol, entry_price, entry_date, full_df, current_price))
+            results.append(evaluate_holding(symbol, entry_price, entry_date, full_df, current_price, exit_module))
         except Exception as e:
             results.append({
                 "Symbol": symbol,
