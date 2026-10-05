@@ -32,4 +32,12 @@ Strategies/Default/data/*
 !Strategies/Default/data/strategy_stats.csv
 !Strategies/Default/data/holdings.csv
 !Strategies/Default/data/fund
+# Point-in-time Nifty 500 membership (historical_universe.py) - archived
+# snapshots can't be regenerated if the source disappears, so keep them.
+!Strategies/Default/data/universe_history
 Strategies/universe_cache.json
+# US market (Strategies/US) - same split as Default above. No fund ledger
+# on the US side, so only the Stats leaderboard and Holdings are kept.
+Strategies/US/data/*
+!Strategies/US/data/strategy_stats.csv
+!Strategies/US/data/holdings.csv

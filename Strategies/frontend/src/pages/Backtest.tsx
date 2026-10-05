@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { MARKET } from '../market'
 import { backtestApi, fetchReport, type BacktestChart, type BacktestResult, type ReportResponse, type YearlyRow } from '../api'
 
 function formatEta(seconds: number | null | undefined): string {
@@ -11,7 +12,7 @@ function formatEta(seconds: number | null | undefined): string {
 
 function formatMoney(n: number | undefined) {
   if (n === undefined) return '—'
-  return n.toLocaleString('en-IN', { maximumFractionDigits: 0 })
+  return n.toLocaleString(MARKET.locale, { maximumFractionDigits: 0 })
 }
 
 function formatPct(n: number | null | undefined, digits = 2) {
@@ -59,7 +60,7 @@ export default function Backtest() {
   const [tradesOpen, setTradesOpen] = useState(false)
   const [chart, setChart] = useState<BacktestChart | null>(null)
   const [showInflation, setShowInflation] = useState(false)
-  const [showNifty, setShowNifty] = useState(false)
+  const [showBenchmark, setShowBenchmark] = useState(false)
   const [chartLoading, setChartLoading] = useState(false)
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -74,10 +75,10 @@ export default function Backtest() {
     })
   }
 
-  const loadChart = (inflation: boolean, nifty: boolean) => {
+  const loadChart = (inflation: boolean, benchmark: boolean) => {
     setChartLoading(true)
     backtestApi
-      .chart(inflation, nifty)
+      .chart(inflation, benchmark)
       .then(setChart)
       .finally(() => setChartLoading(false))
   }
@@ -95,9 +96,9 @@ export default function Backtest() {
   }, [])
 
   useEffect(() => {
-    if (result?.available) loadChart(showInflation, showNifty)
+    if (result?.available) loadChart(showInflation, showBenchmark)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [result?.available, showInflation, showNifty])
+  }, [result?.available, showInflation, showBenchmark])
 
   useEffect(() => {
     if (!message) return
@@ -177,7 +178,7 @@ export default function Backtest() {
   let chartMin = 0
   let chartMax = 1
   if (chart) {
-    const all = [...chart.nominal, ...(chart.inflation_adjusted ?? []), ...(chart.nifty ?? [])]
+    const all = [...chart.nominal, ...(chart.inflation_adjusted ?? []), ...(chart.benchmark ?? [])]
     chartMin = Math.min(...all)
     chartMax = Math.max(...all)
   }
@@ -224,7 +225,7 @@ export default function Backtest() {
               />
             </div>
             <div>
-              <label className="mb-1.5 block text-[11.5px] font-semibold text-gray-500">Starting capital (Rs.)</label>
+              <label className="mb-1.5 block text-[11.5px] font-semibold text-gray-500">Starting capital ({MARKET.currencyPrefix})</label>
               <input
                 type="number"
                 value={capital}
@@ -247,7 +248,7 @@ export default function Backtest() {
 
           <p className="mt-3.5 text-[11.5px] leading-relaxed text-gray-400">
             Signals compete for a fixed number of position slots, sized as an equal share of current total equity.
-            First run for a given range fetches history from NSE and caches it; later runs over the same range reuse
+            First run for a given range fetches history from {MARKET.dataSource} and caches it; later runs over the same range reuse
             that cache.
           </p>
 
@@ -320,7 +321,7 @@ export default function Backtest() {
             <div className="grid grid-cols-6 gap-3">
               <div className="rounded-xl border border-gray-200 bg-white p-3.5">
                 <div className="mb-1.5 text-[10.5px] font-bold uppercase tracking-wide text-gray-400">Final Equity</div>
-                <div className="font-mono text-base font-bold">Rs.{formatMoney(result.final_equity)}</div>
+                <div className="font-mono text-base font-bold">{MARKET.currencyPrefix}{formatMoney(result.final_equity)}</div>
                 <div className="mt-0.5 text-[11px] text-green-600">{formatPct(result.total_return_pct)} total</div>
               </div>
               <div className="rounded-xl border border-gray-200 bg-white p-3.5">
@@ -355,8 +356,8 @@ export default function Backtest() {
                 Show inflation-adjusted results
               </label>
               <label className="flex cursor-pointer items-center gap-1.5 text-[12.5px] font-medium text-gray-600">
-                <input type="checkbox" checked={showNifty} onChange={(e) => setShowNifty(e.target.checked)} />
-                Compare with Nifty 50
+                <input type="checkbox" checked={showBenchmark} onChange={(e) => setShowBenchmark(e.target.checked)} />
+                Compare with {MARKET.benchmarkLabel}
               </label>
               {chartLoading && <span className="text-xs text-gray-400">Loading...</span>}
             </div>
@@ -367,8 +368,8 @@ export default function Backtest() {
                   <svg viewBox="0 0 860 260" width="100%" height="260" style={{ display: 'block' }}>
                     <line x1="40" y1="20" x2="40" y2="220" stroke="#EEEEF0" strokeWidth="1" />
                     <line x1="40" y1="220" x2="840" y2="220" stroke="#EEEEF0" strokeWidth="1" />
-                    {chart.nifty && (
-                      <polyline points={toPolyline(chart.nifty, chartMin, chartMax)} fill="none" stroke="#9AA0AC" strokeWidth="1.75" strokeDasharray="4 3" />
+                    {chart.benchmark && (
+                      <polyline points={toPolyline(chart.benchmark, chartMin, chartMax)} fill="none" stroke="#9AA0AC" strokeWidth="1.75" strokeDasharray="4 3" />
                     )}
                     {chart.inflation_adjusted && (
                       <polyline points={toPolyline(chart.inflation_adjusted, chartMin, chartMax)} fill="none" stroke="#D97706" strokeWidth="1.75" />
@@ -392,10 +393,10 @@ export default function Backtest() {
                         <span className="text-[11px] text-gray-500">Inflation-adjusted</span>
                       </div>
                     )}
-                    {chart.nifty && (
+                    {chart.benchmark && (
                       <div className="flex items-center gap-1.5">
                         <span className="inline-block h-0 w-3.5 border-t-2 border-dashed border-gray-400" />
-                        <span className="text-[11px] text-gray-500">Nifty 50</span>
+                        <span className="text-[11px] text-gray-500">{MARKET.benchmarkLabel}</span>
                       </div>
                     )}
                   </div>
@@ -440,8 +441,8 @@ export default function Backtest() {
                       {yearly.map((row) => (
                         <tr key={row.year} className="border-t border-gray-100">
                           <td className="px-[18px] py-2 font-mono text-xs font-bold">{row.year}</td>
-                          <td className="px-[18px] py-2 text-right font-mono text-xs text-gray-700">Rs.{formatMoney(row.start_equity)}</td>
-                          <td className="px-[18px] py-2 text-right font-mono text-xs text-gray-700">Rs.{formatMoney(row.end_equity)}</td>
+                          <td className="px-[18px] py-2 text-right font-mono text-xs text-gray-700">{MARKET.currencyPrefix}{formatMoney(row.start_equity)}</td>
+                          <td className="px-[18px] py-2 text-right font-mono text-xs text-gray-700">{MARKET.currencyPrefix}{formatMoney(row.end_equity)}</td>
                           <td className={`px-[18px] py-2 text-right font-mono text-xs font-semibold ${row.return_pct >= 0 ? 'text-green-700' : 'text-red-700'}`}>
                             {formatPct(row.return_pct, 1)}
                           </td>

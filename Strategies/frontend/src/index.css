@@ -9,11 +9,25 @@
   color-scheme: light;
 }
 
+/* App background and header/tab-bar fill. US mode swaps in a sand wash
+   (html[data-market="US"], set by market.ts) so it's obvious at a glance
+   which market you're in; India keeps the neutral grey. */
+:root {
+  --app-ground: #F7F7F8;
+  --app-bar: #FFFFFF;
+  --app-bar-line: #E5E7EB;
+}
+:root[data-market="US"] {
+  --app-ground: #F5EEDF;
+  --app-bar: #FBF7EF;
+  --app-bar-line: #E7DCC6;
+}
+
 body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-  background: #F7F7F8;
+  background: var(--app-ground);
   color: #111318;
 }
 
@@ -31,7 +45,7 @@ a:hover {
 ::-webkit-scrollbar-thumb {
   background: #D8D8DC;
   border-radius: 8px;
-  border: 2px solid #F7F7F8;
+  border: 2px solid var(--app-ground);
 }
 ::-webkit-scrollbar-track {
   background: transparent;

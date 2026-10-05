@@ -11,8 +11,9 @@ import MissedOpportunities from './pages/MissedOpportunities'
 import Stats from './pages/Stats'
 import FundManager from './pages/FundManager'
 import EventWatcher from './pages/EventWatcher'
-
-const API_BASE_URL = 'http://localhost:8000'
+import MultiStrategy from './pages/MultiStrategy'
+import { API_BASE_URL } from './api'
+import { MARKET, MARKETS, switchMarket, type Market } from './market'
 
 const TABS = [
   { path: '/rules', label: 'Rules' },
@@ -23,13 +24,14 @@ const TABS = [
   { path: '/deep-dive', label: 'Deep Dive' },
   { path: '/missed-opportunities', label: 'Missed Opportunities' },
   { path: '/stats', label: 'Stats' },
-  { path: '/event-watcher', label: 'Event Watcher' },
-]
+  { path: '/event-watcher', label: 'Event Watcher', indiaOnly: true },
+  { path: '/multi-strategy', label: 'Multi-Strategy' },
+].filter((tab) => !tab.indiaOnly || MARKET.hasEventWatcher)
 
 function NavBar() {
   const location = useLocation()
   return (
-    <nav className="flex flex-shrink-0 items-center gap-1 border-b border-gray-200 bg-white px-6">
+    <nav className="flex flex-shrink-0 items-center gap-1 border-b border-[var(--app-bar-line)] bg-[var(--app-bar)] px-6">
       {TABS.map((tab) => {
         const active = location.pathname === tab.path
         return (
@@ -51,18 +53,48 @@ function NavBar() {
   )
 }
 
+function MarketSwitch() {
+  return (
+    <div className="flex rounded-md border border-[var(--app-bar-line)] p-0.5" role="group" aria-label="Market">
+      {(Object.keys(MARKETS) as Market[]).map((code) => {
+        const active = code === MARKET.code
+        return (
+          <button
+            key={code}
+            type="button"
+            aria-pressed={active}
+            onClick={() => !active && switchMarket(code)}
+            className={`rounded px-2.5 py-1 text-xs font-semibold ${
+              active ? 'bg-accent text-white' : 'text-gray-500 hover:text-gray-900'
+            }`}
+          >
+            {MARKETS[code].label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 function BackendStatus() {
-  const [health, setHealth] = useState<{ status: string } | null>(null)
+  const [health, setHealth] = useState<object | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  // Where the backend can say which market it serves (/market), check that
+  // too, so a wrong process on this port shows up as an error.
   useEffect(() => {
-    fetch(`${API_BASE_URL}/health`)
+    fetch(`${API_BASE_URL}${MARKET.identifiesMarket ? '/market' : '/health'}`)
       .then((res) => {
         if (!res.ok) throw new Error(`Backend responded with ${res.status}`)
-        return res.json() as Promise<{ status: string }>
+        return res.json() as Promise<{ market?: Market }>
       })
-      .then(setHealth)
-      .catch((err) => setError(err.message))
+      .then((info) => {
+        if (MARKET.identifiesMarket && info.market !== MARKET.code) {
+          throw new Error(`port serves ${info.market}, expected ${MARKET.code}`)
+        }
+        setHealth(info)
+      })
+      .catch((err) => setError(err.message === 'Failed to fetch' ? `${MARKET.label} backend not reachable at ${API_BASE_URL}` : err.message))
   }, [])
 
   if (error) {
@@ -94,8 +126,8 @@ function BackendStatus() {
  * deliberately not one of these tabs. */
 function AppShell() {
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-[#F7F7F8] text-gray-900">
-      <header className="flex flex-shrink-0 items-center justify-between border-b border-gray-200 bg-white px-7 py-3.5">
+    <div className="flex h-screen flex-col overflow-hidden bg-[var(--app-ground)] text-gray-900">
+      <header className="flex flex-shrink-0 items-center justify-between border-b border-[var(--app-bar-line)] bg-[var(--app-bar)] px-7 py-3.5">
         <div className="flex items-center gap-2.5">
           <div className="flex h-[26px] w-[26px] flex-shrink-0 items-center justify-center rounded-[7px] bg-accent">
             <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -109,6 +141,7 @@ function AppShell() {
           <h1 className="text-[15px] font-extrabold tracking-tight">Frontier TradeLight</h1>
         </div>
         <div className="flex items-center gap-4">
+          <MarketSwitch />
           <Link to="/fund-manager" className="text-xs font-semibold text-gray-500 no-underline hover:text-gray-900">
             Fund Manager
           </Link>
@@ -127,7 +160,8 @@ function AppShell() {
         <Route path="/deep-dive" element={<DeepDive />} />
         <Route path="/missed-opportunities" element={<MissedOpportunities />} />
         <Route path="/stats" element={<Stats />} />
-        <Route path="/event-watcher" element={<EventWatcher />} />
+        {MARKET.hasEventWatcher && <Route path="/event-watcher" element={<EventWatcher />} />}
+        <Route path="/multi-strategy" element={<MultiStrategy />} />
         <Route path="*" element={<Rules />} />
       </Routes>
     </div>

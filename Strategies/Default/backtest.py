@@ -3,7 +3,7 @@ Backtests the strategy currently defined in generated_rules.py, using the
 exit logic currently defined in generated_exit_strategy.py, over a
 historical date range.
 
-Standalone module: only depends on universe_fetcher, nse_utils,
+Standalone module: only depends on historical_universe, nse_utils,
 generated_rules, and generated_exit_strategy - no dependency on
 stock_screener.py or app.py, so this can be lifted into a separate service
 later by wrapping run_backtest() in an API endpoint.
@@ -39,7 +39,7 @@ warnings.filterwarnings("ignore")
 
 import pandas as pd
 
-from universe_fetcher import get_top_stocks_by_sector
+from historical_universe import members_as_of, symbols_between, universe_info
 from nse_utils import fetch_stock_history, calculate_sector_strength, calculate_market_breadth
 from backup_utils import declared_strategy_name
 from stats_utils import hash_rules_content
@@ -85,9 +85,20 @@ def _month_span(from_date, to_date):
     return (to_date.year - from_date.year) * 12 + (to_date.month - from_date.month) + 1
 
 
+# Every stock that was in the Nifty 500 at any point in [start, end], from
+# the locally stored point-in-time membership (historical_universe.py). Only
+# *loading* uses this superset; whether a stock may trade on a given day is
+# decided per day by members_as_of() in run_backtest.
+def _backtest_universe(start_date, end_date):
+    symbols = symbols_between(start_date, end_date)
+    if not symbols:
+        raise RuntimeError("No historical universe available - run `python historical_universe.py`.")
+    return universe_info(symbols)
+
+
 # Pre-flight check: how many stocks still need fetching and roughly how
 # long a run over this date range will take, without fetching anything.
-def estimate_runtime(start_date, end_date, limit_per_sector=50, warmup_days=WARMUP_DAYS):
+def estimate_runtime(start_date, end_date, warmup_days=WARMUP_DAYS):
     """Pre-flight estimate: how many universe stocks still need fetching from
     NSE for this date range, and a rough time range for the run. Does not
     fetch anything itself - only checks the on-disk cache and the (usually
@@ -96,7 +107,7 @@ def estimate_runtime(start_date, end_date, limit_per_sector=50, warmup_days=WARM
     Long ranges cost more than short ones even per-stock, since NSE's API is
     paginated by calendar month under the hood - a 5-year range issues ~60+
     monthly requests per stock, not one."""
-    universe = get_top_stocks_by_sector(limit_per_sector=limit_per_sector)
+    universe = _backtest_universe(start_date, end_date)
     fetch_from = start_date - datetime.timedelta(days=warmup_days)
 
     total = len(universe)
@@ -348,7 +359,7 @@ def _forward_return_pct(full_df, signal_day, holding_days=NEAR_MISS_HOLDING_DAYS
 
 # Core simulation loop: walks the date range day by day, evaluates every
 # stock with the live strategy, opens trades on passes, and tracks near-misses.
-def run_backtest(start_date, end_date, limit_per_sector=50, progress_callback=None):
+def run_backtest(start_date, end_date, progress_callback=None):
     """Run the backtest. Returns (trades_df, summary_df, near_misses_df).
 
     progress_callback, if given, is called as progress_callback(done, total, day)
@@ -364,9 +375,7 @@ def run_backtest(start_date, end_date, limit_per_sector=50, progress_callback=No
     stocks it's blocking tend to be worth catching (see near_misses_df,
     and the "Missed Opportunities" tab that reads it).
     """
-    universe = get_top_stocks_by_sector(limit_per_sector=limit_per_sector)
-    if not universe:
-        raise RuntimeError("Could not build stock universe.")
+    universe = _backtest_universe(start_date, end_date)
 
     data = load_universe_history(universe, start_date, end_date)
     if not data:
@@ -394,6 +403,11 @@ def run_backtest(start_date, end_date, limit_per_sector=50, progress_callback=No
         if progress_callback:
             progress_callback(day_idx + 1, total_days, day)
 
+        # Point-in-time membership: only stocks that were actually in the
+        # Nifty 500 on `day` are tradable and count towards sector strength
+        # and market breadth - no survivorship/look-ahead.
+        members_today = members_as_of(day)
+
         snapshot = {}
         for symbol, df in data.items():
             dates = symbol_dates[symbol]
@@ -403,7 +417,7 @@ def run_backtest(start_date, end_date, limit_per_sector=50, progress_callback=No
                 p += 1
             pos[symbol] = p
 
-            if p + 1 >= MIN_HISTORY_ROWS and p >= 0 and dates[p] == day:
+            if symbol in members_today and p + 1 >= MIN_HISTORY_ROWS and p >= 0 and dates[p] == day:
                 snapshot[symbol] = df.iloc[:p + 1]
 
         if not snapshot:
@@ -581,7 +595,6 @@ def main():
     )
     parser.add_argument("--start", required=True, type=_parse_date, help="Start date YYYY-MM-DD")
     parser.add_argument("--end", required=True, type=_parse_date, help="End date YYYY-MM-DD")
-    parser.add_argument("--limit-per-sector", type=int, default=50)
     parser.add_argument("--initial-capital", type=float, default=100000.0, help="Starting portfolio capital, e.g. 100000")
     parser.add_argument("--max-positions", type=int, default=10, help="Max number of concurrent open positions")
     parser.add_argument("--trades-out", default=BACKTEST_TRADES_PATH)
@@ -595,7 +608,6 @@ def main():
 
     trades_df, summary_df, near_misses_df = run_backtest(
         args.start, args.end,
-        limit_per_sector=args.limit_per_sector,
         progress_callback=progress,
     )
 

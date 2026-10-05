@@ -16,6 +16,8 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
 
 $BackendPort = 8000
+# US market backend (Strategies\US) - same interpreter, separate process/port.
+$UsBackendPort = 8001
 $FrontendPort = 5173
 $ViteJs = "frontend\node_modules\vite\bin\vite.js"
 
@@ -64,6 +66,11 @@ if (-not $BackendExe) {
     exit 1
 }
 
+# Same interpreter and args for the US backend, pointed at US\ on its own port.
+$UsBackendArgs = $BackendArgs | ForEach-Object {
+    if ($_ -eq "Default") { "US" } elseif ($_ -eq "$BackendPort") { "$UsBackendPort" } else { $_ }
+}
+
 if (-not (Test-Path "frontend\node_modules")) {
     Write-Host "frontend\node_modules not found - running npm install..."
     Push-Location frontend
@@ -76,6 +83,7 @@ if (-not (Test-Path "node_modules")) {
 }
 
 $backendProcess = $null
+$usBackendProcess = $null
 $frontendProcess = $null
 
 function Stop-Servers {
@@ -83,6 +91,9 @@ function Stop-Servers {
     Write-Host "Shutting down..."
     if ($backendProcess -and -not $backendProcess.HasExited) {
         Stop-Process -Id $backendProcess.Id -Force -ErrorAction SilentlyContinue
+    }
+    if ($usBackendProcess -and -not $usBackendProcess.HasExited) {
+        Stop-Process -Id $usBackendProcess.Id -Force -ErrorAction SilentlyContinue
     }
     if ($frontendProcess -and -not $frontendProcess.HasExited) {
         Stop-Process -Id $frontendProcess.Id -Force -ErrorAction SilentlyContinue
@@ -93,6 +104,10 @@ function Stop-Servers {
 try {
     Write-Host "Starting backend on port $BackendPort..."
     $backendProcess = Start-Process -FilePath $BackendExe -ArgumentList $BackendArgs `
+        -WorkingDirectory $ScriptDir -PassThru -WindowStyle Hidden
+
+    Write-Host "Starting US backend on port $UsBackendPort..."
+    $usBackendProcess = Start-Process -FilePath $BackendExe -ArgumentList $UsBackendArgs `
         -WorkingDirectory $ScriptDir -PassThru -WindowStyle Hidden
 
     Write-Host "Starting frontend on port $FrontendPort..."
@@ -122,12 +137,13 @@ try {
     Start-Process "http://localhost:$FrontendPort"
 
     Write-Host ""
-    Write-Host "Backend:  http://localhost:$BackendPort/docs"
+    Write-Host "Backend (India): http://localhost:$BackendPort/docs"
+    Write-Host "Backend (US):    http://localhost:$UsBackendPort/docs"
     Write-Host "Frontend: http://localhost:$FrontendPort"
     Write-Host ""
-    Write-Host "Close this window or press Ctrl+C to stop both servers."
+    Write-Host "Close this window or press Ctrl+C to stop all servers."
 
-    Wait-Process -Id $backendProcess.Id, $frontendProcess.Id -ErrorAction SilentlyContinue
+    Wait-Process -Id $backendProcess.Id, $usBackendProcess.Id, $frontendProcess.Id -ErrorAction SilentlyContinue
 } finally {
     Stop-Servers
 }

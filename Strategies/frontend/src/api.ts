@@ -1,4 +1,11 @@
-export const API_BASE_URL = 'http://localhost:8000'
+import { MARKET, MARKETS } from './market'
+
+export const API_BASE_URL = MARKET.apiBase
+
+/** The fund is India-only and its ledger lives in the India backend, so
+ * Fund Manager calls go there whichever market is selected. */
+const FUND_API_BASE_URL = MARKETS.IN.apiBase
+const baseFor = (path: string) => (path.startsWith('/fund-manager') ? FUND_API_BASE_URL : API_BASE_URL)
 
 export interface FileContent {
   content: string
@@ -9,7 +16,7 @@ export interface BackupGroups {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${path}`, {
+  const res = await fetch(`${baseFor(path)}${path}`, {
     headers: { 'Content-Type': 'application/json' },
     ...init,
   })
@@ -161,7 +168,7 @@ export interface BacktestChart {
   dates: string[]
   nominal: number[]
   inflation_adjusted: number[] | null
-  nifty: number[] | null
+  benchmark: number[] | null
 }
 
 export interface YearlyRow {
@@ -196,8 +203,13 @@ export const backtestApi = {
   stop: () => request<{ status: string }>('/backtest/stop', { method: 'POST' }),
   status: () => request<BacktestStatus>('/backtest/status'),
   result: () => request<BacktestResult>('/backtest/result'),
-  chart: (inflation: boolean, nifty: boolean) =>
-    request<BacktestChart>(`/backtest/chart?inflation=${inflation}&nifty=${nifty}`),
+  chart: async (inflation: boolean, benchmark: boolean): Promise<BacktestChart> => {
+    const key = MARKET.chartBenchmarkKey
+    const raw = await request<Omit<BacktestChart, 'benchmark'> & Record<string, number[] | null>>(
+      `/backtest/chart?inflation=${inflation}&${key}=${benchmark}`,
+    )
+    return { ...raw, benchmark: raw[key] ?? null }
+  },
   yearly: () => request<{ rows: YearlyRow[] }>('/backtest/yearly'),
   portfolioByYear: () => request<PortfolioByYear>('/backtest/portfolio-by-year'),
 }
@@ -365,14 +377,14 @@ export const fundManagerApi = {
     formData.append('category', category)
     formData.append('date', date)
     formData.append('notes', notes)
-    const res = await fetch(`${API_BASE_URL}/fund-manager/documents`, { method: 'POST', body: formData })
+    const res = await fetch(`${FUND_API_BASE_URL}/fund-manager/documents`, { method: 'POST', body: formData })
     if (!res.ok) {
       const detail = await res.json().catch(() => null)
       throw new Error(detail?.detail ?? `Upload failed with ${res.status}`)
     }
     return res.json() as Promise<{ status: string; message?: string; document?: FundDocumentRow }>
   },
-  downloadDocumentUrl: (docId: string) => `${API_BASE_URL}/fund-manager/documents/${encodeURIComponent(docId)}/download`,
+  downloadDocumentUrl: (docId: string) => `${FUND_API_BASE_URL}/fund-manager/documents/${encodeURIComponent(docId)}/download`,
   removeDocument: (docId: string) =>
     request<{ status: string; message?: string }>(`/fund-manager/documents/${encodeURIComponent(docId)}`, {
       method: 'DELETE',
@@ -489,4 +501,89 @@ export const eventWatcherKeywordsApi = {
       method: 'PUT',
       body: JSON.stringify(config),
     }),
+}
+
+export interface MultiStrategyOption {
+  key: string
+  name: string
+  file: string
+  versions: number
+  supported: boolean
+  unsupported_reason: string | null
+}
+
+export type StrategyVerdict = 'buy' | 'near' | 'none' | 'error'
+
+export interface StrategyRunResult {
+  key: string
+  status: StrategyVerdict
+  error?: string
+  closeness_score: number | null
+  failed_rules: string[]
+  details: Record<string, string | number | boolean | null>
+}
+
+export interface MultiStrategyRun {
+  symbol: string
+  last_close: number
+  last_date: string
+  in_universe: boolean
+  market_breadth: number
+  context_date: string
+  results: StrategyRunResult[]
+}
+
+export const multiStrategyApi = {
+  strategies: () =>
+    request<{ strategies: MultiStrategyOption[]; context_date: string | null }>('/multi-strategy/strategies'),
+  run: (symbol: string, strategyKeys: string[]) =>
+    request<MultiStrategyRun>('/multi-strategy/run', {
+      method: 'POST',
+      body: JSON.stringify({ symbol, strategy_keys: strategyKeys }),
+    }),
+  /** Streams per-strategy progress (newline-delimited JSON from
+   * /multi-strategy/run-stream) and resolves with the final run. */
+  runStream: async (
+    symbol: string,
+    strategyKeys: string[],
+    onProgress: (p: StrategyProgress) => void,
+  ): Promise<MultiStrategyRun> => {
+    const res = await fetch(`${API_BASE_URL}/multi-strategy/run-stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol, strategy_keys: strategyKeys }),
+    })
+    if (!res.ok || !res.body) {
+      const detail = await res.json().catch(() => null)
+      throw new Error(detail?.detail ?? `Request to /multi-strategy/run-stream failed with ${res.status}`)
+    }
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let final: MultiStrategyRun | null = null
+    const handle = (line: string) => {
+      if (!line.trim()) return
+      const event = JSON.parse(line)
+      if (event.type === 'progress') onProgress(event as StrategyProgress)
+      else if (event.type === 'result') final = event.run as MultiStrategyRun
+      else if (event.type === 'error') throw new Error(event.message)
+    }
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      lines.forEach(handle)
+    }
+    handle(buffer)
+    if (!final) throw new Error('The run ended before returning results.')
+    return final
+  },
+}
+
+export interface StrategyProgress {
+  key: string
+  pct: number
+  stage: string
 }

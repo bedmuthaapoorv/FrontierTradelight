@@ -20,6 +20,8 @@ SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
 cd "$SCRIPT_DIR"
 
 BACKEND_PORT=8000
+# US market backend (Strategies/US) - same venv, separate process/port.
+US_BACKEND_PORT=8001
 FRONTEND_PORT=5173
 VENV_PYTHON="Default/.venv/bin/python"
 VENV_UVICORN="Default/.venv/bin/uvicorn"
@@ -57,12 +59,14 @@ if [ ! -d "node_modules" ]; then
 fi
 
 BACKEND_PID=""
+US_BACKEND_PID=""
 FRONTEND_PID=""
 
 cleanup() {
   echo
   echo "Shutting down..."
   [ -n "$BACKEND_PID" ] && kill "$BACKEND_PID" 2>/dev/null
+  [ -n "$US_BACKEND_PID" ] && kill "$US_BACKEND_PID" 2>/dev/null
   [ -n "$FRONTEND_PID" ] && kill "$FRONTEND_PID" 2>/dev/null
   wait 2>/dev/null
   echo "Stopped. You can close this window."
@@ -72,6 +76,10 @@ trap cleanup EXIT INT TERM
 echo "Starting backend on port $BACKEND_PORT..."
 "$VENV_UVICORN" api.main:app --reload --port "$BACKEND_PORT" --app-dir Default &
 BACKEND_PID=$!
+
+echo "Starting US backend on port $US_BACKEND_PORT..."
+"$VENV_UVICORN" api.main:app --reload --port "$US_BACKEND_PORT" --app-dir US &
+US_BACKEND_PID=$!
 
 echo "Starting frontend on port $FRONTEND_PORT..."
 # exec replaces this subshell with vite itself, so $! below is vite's own
@@ -91,9 +99,10 @@ done
 open "http://localhost:$FRONTEND_PORT" 2>/dev/null
 
 echo
-echo "Backend:  http://localhost:$BACKEND_PORT/docs"
+echo "Backend (India): http://localhost:$BACKEND_PORT/docs"
+echo "Backend (US):    http://localhost:$US_BACKEND_PORT/docs"
 echo "Frontend: http://localhost:$FRONTEND_PORT"
 echo
-echo "Close this window or press Ctrl+C to stop both servers."
+echo "Close this window or press Ctrl+C to stop all servers."
 
 wait

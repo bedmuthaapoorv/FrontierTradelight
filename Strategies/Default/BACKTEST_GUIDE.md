@@ -8,8 +8,10 @@ the logic on faith.
 ## What it does
 
 For every trading day in the date range you choose, it evaluates every
-stock in the universe using only price data available up to that day (no
-look-ahead) — the exact same `evaluate_stock` function the live screener
+stock that was **in the Nifty 500 on that day** (point-in-time membership
+stored locally in `data/universe_history/`, built by `historical_universe.py` —
+no survivorship bias, and the result no longer drifts day to day), using only
+price data available up to that day (no look-ahead) — the exact same `evaluate_stock` function the live screener
 uses. Whenever a stock signals a pass:
 
 1. It opens a flat **₹100 trade** at the **next trading day's open**.
