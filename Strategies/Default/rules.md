@@ -2,7 +2,7 @@
 
 ## Strategy Metadata
 
-Strategy Name: Horizontal Breakout Momentum (O'Neil Volume)
+Strategy Name: Cup and Handle Breakout v1
 Market: India (NSE/BSE)
 Timeframe: Daily
 Holding Period: Trend Trade (1-90 Days)
@@ -12,363 +12,471 @@ Holding Period: Trend Trade (1-90 Days)
 ## Data Availability Note
 
 Only the following data is available to this strategy: each stock's own
-daily OHLCV (open/high/low/close/volume) history, a `SectorRank` value
-(1 = best-performing sector by recent average return, higher = weaker), and
-a `MarketBreadth` value (0-100: percentage of the entire universe currently
-trading above its own 50-day moving average) - both computed once per day
-from OHLCV data across the universe. There is NO Nifty benchmark index
-data and NO earnings calendar available. Every rule below must be
-computable from OHLCV + SectorRank + MarketBreadth alone.
+daily OHLCV (open/high/low/close/volume) history (~400 trading days), a
+`SectorRank` value (1 = best-performing sector by recent average return,
+higher = weaker), and a `MarketBreadth` value (0-100: percentage of the
+entire universe currently trading above its own 50-day moving average) -
+both computed once per day from OHLCV data across the universe. There is NO
+Nifty benchmark index data, NO earnings/fundamental data and NO IBD-style
+Relative Strength rating available. Every rule below must be computable
+from OHLCV + SectorRank + MarketBreadth alone.
 
 ---
 
 ## Strategy Rationale
 
-v3 was a pullback-to-support strategy (buy near a recent low, in an
-uptrend). Backtesting showed ~80%+ of v3 trades were stopped out shortly
-after entry regardless of stop width, while the rare trades that survived
-to the max holding period were consistently profitable. This points to a
-mismatch: buying near a recent low is more often a failing bounce than a
-genuine trend resumption, which is exactly what a wide ATR trailing stop
-chops up. v4 flipped the entry philosophy to a breakout: buy stocks pushing
-to new short-term highs on strong volume, in a confirmed uptrend.
+A fresh strategy line, not a v-increment of Horizontal Breakout Momentum.
+Both buy a breakout, but this one requires a specific, long base structure
+(a rounded cup followed by a short, shallow handle) before the breakout
+counts, so trade counts, hold times and win rates are not expected to match
+Breakout Momentum's. Back-test it independently before comparing.
 
-v5 removed the fixed take-profit from the exit strategy (see
-exit_rules.md) so winning trades aren't capped - trend-following systems
-earn their edge from a few large winners paying for many small losers, and
-a fixed take-profit destroys that asymmetry. This flipped the 3-year
-backtest from net negative to slightly net positive, but the win rate
-stayed stuck around 35% regardless of entry tuning.
+All thresholds come from `reports/Cup and handle breakout rules.md` (project
+root), which grades each one by evidence. Read that report before changing
+any number. Points that shaped this spec:
 
-v6 adds a market-breadth filter: pause new entries when the broader
-universe itself is broad-based weak (few stocks above their own 50-day
-average), since even a good individual breakout setup tends to fail when
-the overall market is correcting. This is a stand-in for the Nifty-based
-market-regime filter real trend traders use, built entirely from data this
-pipeline already has.
+- Most geometry thresholds (30% prior advance, 12-35% cup depth, handle in
+  the upper half, handle depth <= 12%, 1.4x breakout volume, 5% chase limit)
+  are O'Neil/IBD convention, confirmed through practitioner and secondary
+  sources only. None has a rigorous cup-specific validation.
+- The only rigorous large-sample study (O'Neil Global Advisors, "Breakouts:
+  Pump up the Volume", May 2022, ~197,000 US breakouts 1995-2021) found the
+  hit rate flat at ~57% across every breakout-volume bucket, while average
+  gain and alpha rose with volume. So the 1.4x volume rule is kept as a
+  validity gate (doctrine), and volume magnitude is the largest ranking
+  weight - it predicts move size, not odds.
+- Bulkowski's widely quoted 5% failure rate / 54% average rise come from
+  hand-picked "perfect trades" measured to a hindsight ultimate high. They
+  are NOT a benchmark for this automated detector. A realistic baseline is
+  roughly 57% winners before costs.
+- There is no Indian-market evidence for this pattern at all. The first NSE
+  backtest is the first real test.
+- MarketBreadth and SectorRank are ranking weights in v1, NOT hard gates.
+  The evidence for a regime gate on this pattern is vendor-level and
+  ex-post only, and a gate cuts sample size. Testing a hard
+  `MarketBreadth >= 45` gate (as Breakout Momentum uses) is the intended
+  v2 experiment.
+- Deliberately excluded from v1: cup-without-handle, cheat/low-cheat
+  entries, deep-cup (bear-market) allowance, base-count (late-stage base)
+  penalty, and delivery %. Each is either a separate trigger with its own
+  risk profile or rests on unverified numbers.
+- Fix every threshold before the first backtest. Use any later sensitivity
+  grid only to check robustness, not to pick the best-looking parameters.
 
-v7 loosens Rule 4's volume confirmation. Analyzing v6's near-misses (the
-Missed Opportunities tab, stocks that failed exactly one mandatory rule)
-found Volume Confirmation was by far the single largest blocking reason -
-6,654 of 10,669 near-misses (62%) over the 5-year benchmark range, more
-than 4x the next largest category. Those blocked stocks still averaged a
-+1.49% 20-day forward return at a 54% win rate - not a standout number,
-but not a red flag either, and notably better than v6's own actual funded
-trades (+Rs.1.54 mean profit at only a 39% win rate). The day-over-day
-clause (`Volume[-1] > Volume[-2]`) is the more likely culprit: it rejects
-a stock on an already-elevated, above-average volume day just because
-yesterday happened to be even higher - two strong volume days in a row is
-arguably a BETTER breakout signal than one, not a worse one. v7 drops that
-clause, keeping only the absolute 1.3x-average bar, which is the part of
-the rule actually measuring "is volume elevated."
+---
 
-**v7 backtested worse, not better**: CAGR +8.00%/yr (vs v6's +10.03%),
-MaxDD -24.0% (vs -18.1%), Composite 0.24 (vs 0.55). More signals fired as
-expected (2,197 vs 1,300 evaluated, 408 vs 383 funded), but the extra
-volume diluted returns and worsened drawdown rather than adding clean
-incremental trades - competition for the fixed 10 position slots also
-got markedly worse (1,789 vs 917 skipped for lack of capital). The
-near-miss methodology that motivated v7 measures a naive fixed 20-day
-hold, which misses two things the real backtest captures: the ATR
-trailing stop can exit an admitted trade early on a whipsaw before a
-20-day window would show a profit, and every extra signal competes with
-the existing ones for the same limited slots rather than being purely
-additive. Kept as a recorded, honest negative result - not reverted here,
-since v8 tests a second, independent hypothesis on top of it (below); if
-v8 doesn't recover v6's performance, Rule 4's day-over-day clause should
-go back in a future version.
+## Signal-Day Convention (READ FIRST - applies to every rule)
 
-v8 fixes Rule 1's liquidity floor, which has the exact same defect just
-fixed in Trendline Bounce Confirmation v4: a flat `MA(Volume, 20) >=
-100000` share-count threshold, unexamined since v1, with no recorded
-justification for the number. Raw share count is the wrong unit for a
-liquidity floor - 100,000 shares/day means very different things for a
-Rs.50 stock and a Rs.5,000 stock, even though both pass the identical
-threshold. Replaced with the same turnover floor already validated for
-Trendline v4 (MA(Volume * Close, 20) >= Rs. 5 crore/day, checked against
-this project's actual cached universe data - even the weakest 5% of
-stocks by turnover clear ~Rs. 110 crore/day, ~20x this floor). This is an
-independent hypothesis from v7's Rule 4 change - if v8 backtests worse
-than v6 as well, that's evidence the Rule 4 change (not the liquidity
-floor) is the actual problem; if v8 recovers or beats v6's numbers, the
-liquidity fix was worth keeping regardless of Rule 4's outcome.
+- `df` holds one row per completed trading session, oldest first. The
+  signal day **T is the LAST row of `df`** (position `len(df) - 1`). It is a
+  completed session: its Close and Volume are final and MUST be used.
+- All positions below are integer row positions in `df` (0 = oldest row),
+  NOT pandas index labels. Write `Close[T]` as `df['close'].iloc[T]`,
+  `High[C]` as `df['high'].iloc[C]`, and so on.
+- `[x, y]` means the inclusive range of positions x through y.
+  `(x, y)` means exclusive of both ends.
+- Use only rows at positions <= T. Never use a centered rolling window,
+  centered smoother, or any function that looks at rows after the bar it is
+  labelling. Do NOT use `scipy.signal.argrelextrema` for any anchor in this
+  spec - every anchor below is defined by explicit windows that are already
+  fully confirmed by day T.
+- `SMA(x, n)` at position p means the simple mean of x over positions
+  [p - n + 1, p].
+- If `len(df) < 250`, reject immediately with "Insufficient data (< 250
+  sessions)".
 
-v9 tests a third, independent hypothesis on Rule 4, this time tightening
-rather than loosening it, based on O'Neil Global Advisors' "Breakouts:
-Pump Up the Volume" (May 2022), a quantitative study of ~197,000 O'Neil
-pattern breakout events across the U.S. market, 1995-2021. That study
-measured volume as the percent change over a 50-day average volume
-baseline (not 20-day), and found the relationship was NOT a fewer-false-
-breakouts effect: hit rate was flat at ~57% across every volume bucket,
-even ticking down slightly at the highest bucket. What actually scaled
-with volume was the SIZE of the move in both directions - average gain
-rose from 12.91% (volume change <50%) to 19.90% (volume change >=150%,
-i.e. volume >= 2.5x the 50-day average), while average loss also grew
-(-11.42% to -14.53%) - and because the gain grew faster than the loss,
-cumulative alpha over the following 63 trading days rose from 0.67% to
-2.79%, a 4x increase. v9 changes Rule 4 to match that exact threshold and
-window (50-day average, >=2.5x) to test whether this project's own
-backtest shows the same "bigger moves, not more of them" pattern, given
-this strategy's Rank Score already weights Volume_Score at 30% - which,
-if the O'Neil mechanism holds here too, is the right lever (ranking the
-biggest-volume breakouts highest for the limited position slots) rather
-than expecting Rule 4 alone to raise the win rate. This is a materially
-different change from v7's (loosening the multiplier while keeping the
-20-day window) - v7's result does not predict v9's, since v7 never tested
-a wider averaging window or a threshold in the direction the O'Neil data
-actually supports.
+---
+
+## Pattern Anchor Detection (Shared Definition)
+
+Locate the five anchor points in this exact order. Each yields exactly one
+position per stock per day. If any step says "reject", stop and return
+`Passed = False` with that reason - do not evaluate the Mandatory Filters,
+since there is no pattern to test.
+
+Notation: A = left rim, B = cup low, C = right rim (handle high),
+D = handle low, K = base of the prior advance.
+
+### Step 1: Right rim C
+
+Let C be the position with the highest `High` in the window [T - 22, T - 5].
+On ties, take the LATEST such position.
+
+Then require `High[C] >= max(High over [C + 1, T - 1])`, i.e. no later bar
+before the signal day traded above C's high. If this fails, reject with
+"No handle structure (higher high after right rim)".
+
+Notes:
+- Requiring C <= T - 5 makes C a confirmed high (at least 4 lower-or-equal
+  sessions follow it) AND sets the 5-session handle minimum in one rule. Do
+  not add a separate pivot detector for C - a coarse pivot (e.g. order 10)
+  would silently force a 10-day minimum handle.
+
+### Step 2: Handle low D
+
+D is the position with the lowest `Low` in [C + 1, T - 1]. On ties, take
+the LATEST such position.
+
+D is not a pivot. It is simply "the lowest low since the right rim,
+excluding the signal day", recomputed every day.
+
+### Step 3: Left rim A
+
+Search positions i in [max(10, C - 250), C - 30], from the MOST RECENT
+(i = C - 30) backwards to the oldest. Take the FIRST i that satisfies both:
+
+1. i is a swing high of half-width 10:
+   `High[i] >= max(High over [i - 10, i + 10])`
+2. Nothing between i and C traded higher:
+   `High[i] >= max(High over [i, C - 1])`
+
+That i is A. If no i qualifies, reject with "No left rim found".
+
+Notes:
+- Every candidate i is at most C - 30, so i + 10 <= T - 25: the swing-high
+  test uses only rows far before T. No look-ahead.
+- Do NOT add any price tolerance here (e.g. "within X% of C"). Rim
+  alignment is judged only by the Mandatory Filters. A tolerance in the
+  search would skip candidates the filter would accept.
+- "Most recent qualifying" keeps the chosen A stable from day to day.
+
+### Step 4: Cup low B
+
+B is the position with the lowest `Low` in the open range (A, C), i.e.
+[A + 1, C - 1]. On ties, take the LATEST such position.
+
+### Step 5: Prior-advance base K
+
+K = the lowest `Low` over [max(0, A - 120), A - 1].
+
+If fewer than 60 rows exist before A (i.e. A < 60), reject with
+"Unverifiable prior trend (< 60 sessions before left rim)". Do not
+silently pass.
+
+### Derived values (used by the rules below)
+
+- `CupBars = C - A`
+- `HandleBars = T - C` (sessions from the right rim up to the day before
+  the signal day, counting C itself)
+- `CupDepth = (High[A] - Low[B]) / High[A]`
+- `HandleDepth = (High[C] - Low[D]) / High[C]`
+- `Pivot = High[C]`
+- `HandleLow = Low[D]`
+- `VolRatio = Volume[T] / SMA(Volume, 50) at position T - 1` (the 50-day
+  average volume EXCLUDING the signal day)
 
 ---
 
 ## Mandatory Filters
 
-All rules below MUST pass.
+Evaluate ALL rules below (once anchors are found) and record every failure,
+so near-miss analysis can see which rules blocked a stock.
 
 ---
 
-### Rule 1: Minimum Liquidity Floor (v8 - turnover-based)
+### Rule 1: Minimum Liquidity Floor
 
 Description:
-Reject illiquid stocks so volume signals are meaningful and exits are
+Same turnover-based safety floor validated for Breakout Momentum v8 -
+reject illiquid stocks so breakout volume is meaningful and exits are
 executable without slippage.
 
 Condition:
 
-MA(Volume * Close, 20) >= 50000000
+SMA(Volume * Close, 20) at T >= 50000000
 AND
-Close >= 50
-
-Where:
-MA(Volume * Close, 20) = the 20-day average of daily traded value in
-Rupees (each day's Volume times that day's Close, averaged over the last
-20 trading days) - i.e. turnover, not raw share count.
+Close[T] >= 50
 
 Notes:
-- v7 and earlier used a flat `MA(Volume, 20) >= 100000` share-count floor,
-  unexamined since v1 with no recorded justification for the number -
-  the same defect already fixed in Trendline Bounce Confirmation v4.
-  Turnover (Volume x Close), not raw share count, is what actually
-  determines whether a position can be entered/exited without slippage -
-  a flat share-count floor treats a Rs.50 stock trading 200k shares/day
-  the same as a Rs.5,000 stock trading 200k shares/day, even though the
-  second one has 100x the actual Rupee liquidity.
-- Rs. 5 crore/day (50000000) was checked against this project's actual
-  cached universe data, not assumed: even the weakest 5% of stocks by
-  turnover clear roughly Rs. 110 crore/day in that data, ~20x this floor -
-  consistent with the original share-count version's intent ("should
-  rarely bind, it's a safety floor"), just expressed in units that mean
-  the same thing across different price levels.
-- Close >= 50 is kept as a separate floor against low-priced/penny-stock
-  noise, not a liquidity proxy.
+- Turnover (Volume x Close, in Rupees), not raw share count. Rs. 5
+  crore/day was checked against this project's cached universe data.
 
 ---
 
-### Rule 2: Trend Structure (Moving Average Stack)
+### Rule 2: Prior Uptrend Into the Base
 
 Description:
-Confirm the stock is in a genuine multi-timeframe uptrend using a moving
-average stack.
+A cup-and-handle is a continuation pattern - the left rim must sit at the
+top of a real prior advance. Without this, the detector accepts
+dead-cat-bounce shapes inside downtrends.
 
 Condition:
 
-Close > MA(20)
+High[A] >= 1.30 * K
+
+Notes:
+- O'Neil's 30% minimum prior advance (secondary sources). If NSE backtests
+  show this is too restrictive, relax toward 1.15 (canslimTechnical's
+  value) in a later version rather than dropping the rule.
+
+---
+
+### Rule 3: Cup Length
+
+Description:
+The base must be long enough to be a genuine base (at least 7 weeks,
+handle included), and the cup must fit in the available history.
+
+Condition:
+
+30 <= CupBars <= 250
 AND
-MA(20) > MA(50)
+(T - A) >= 35
+
+Notes:
+- 7-week (35-session) minimum includes the handle (TraderLion). With A at
+  most C - 30 and C at most T - 5, the second clause always holds once
+  anchors are found - keep it as an explicit check anyway.
+- 250-session cap is set by the ~400-day data budget (cup + 120-bar prior
+  advance lookback + handle). Bulkowski's 65-week maximum does not fit.
+
+---
+
+### Rule 4: Cup Depth
+
+Description:
+The cup must be a meaningful correction but not a collapse.
+
+Condition:
+
+0.12 <= CupDepth <= 0.35
+
+Notes:
+- Measured off the left-rim high (O'Neil convention). Do NOT mix with
+  StockCharts' "fraction of prior advance" convention.
+- 12-35% per TraderLion (O'Neil's 12-33% via secondary sources). No
+  deep-cup / bear-market allowance in v1.
+
+---
+
+### Rule 5: Rounded (U-Shaped) Cup Bottom
+
+Description:
+A cup is a rounded base, not a V-shaped spike-and-recovery. Tested three
+ways: overall parabola shape, balanced sides, and time spent near the
+bottom.
+
+Condition (all must hold):
+
+5a. Parabola fit. Fit `y = a*x^2 + b*x + c` by ordinary least squares
+(`numpy.polyfit(x, y, 2)`) to y = Close over positions [A, C], with
+x = (position - A) / (C - A), so x runs from 0 to 1. Require:
+
+    a > 0
+    AND
+    R_squared >= 0.60
+    AND
+    0.25 <= (-b / (2 * a)) <= 0.75
+
+where `R_squared = 1 - SS_res / SS_tot` of that fit.
+
+5b. Balanced sides:
+
+    (B - A) >= 0.25 * CupBars
+    AND
+    (C - B) >= 0.25 * CupBars
+    AND
+    (B - A) >= 20
+
+5c. Time near the bottom. Let
+`BottomZone = Low[B] + 0.25 * (min(High[A], High[C]) - Low[B])`. Require:
+
+    (count of positions p in [A, C] with Close[p] <= BottomZone)
+      >= 0.15 * (CupBars + 1)
+
+Notes:
+- Fit on Close, not High/Low - one long wick distorts a quadratic fit.
+- R² 0.60 is the lenient end of the practitioner range (Abiroid default
+  0.75). 5b already catches most V-bottoms. 5c is a researcher-proposed
+  metric with no published default.
+
+---
+
+### Rule 6: Rim Alignment
+
+Description:
+The right rim must recover close to the left rim's level, but must not
+already be well above it (that would mean the breakout already happened).
+
+Condition:
+
+High[C] >= High[A] - 0.20 * (High[A] - Low[B])
 AND
-MA(50) > MA(126)
-
-Notes:
-- This is the core trend filter: price above a rising short-term average,
-  which is above a rising medium-term average, which is above a rising
-  long-term (6-month) average.
-
----
-
-### Rule 3: Daily RSI Range (Strength Zone)
-
-Description:
-Stock must show strong (not merely neutral) momentum - breakout entries
-need real strength behind them, unlike a pullback entry which wants
-neutral RSI.
-
-Indicator:
-RSI(14) on Daily timeframe
-
-Condition:
-
-55 <= Daily_RSI <= 75
-
-Notes:
-- Raised from the neutral 40-65 band used in the prior pullback version.
-  A genuine breakout is accompanied by RSI pushing into the upper range,
-  not sitting at neutral.
-- 75 as a ceiling avoids the most extreme, likely-to-mean-revert overbought
-  readings while still allowing strong momentum through.
-- Reverted a v4.1 tightening to 60 that shrank the sample to a
-  statistically meaningless size (29 trades over 3 years) without proving
-  beneficial - back to the wider band that produced a real sample (760
-  trades over 3 years) to test against.
-
----
-
-### Rule 4: Volume Confirmation (Breakout Volume) (v9 - O'Neil 50-day/2.5x threshold)
-
-Description:
-A breakout without volume is a weak/fakeout signal. Require a real
-volume surge, not just mild acceleration.
-
-Condition:
-
-Volume[-1] >= 2.5 * MA(Volume, 50)
-
-Where:
-MA(Volume, 50) = the 50-day average of daily traded share volume (not the
-20-day window used in v7/v8).
-
-Notes:
-- v9 replaces v7/v8's `Volume[-1] >= 1.3 * MA(Volume, 20)` with the exact
-  window and threshold O'Neil Global Advisors' "Breakouts: Pump Up the
-  Volume" (May 2022) found produced the strongest, monotonically-best
-  alpha bucket in their 1995-2021 U.S. study: volume percent change over a
-  50-day average of >=150% (i.e. volume >= 2.5x that average). See the
-  Strategy Rationale section above for the full comparison and why this is
-  a materially different change from v7's (which loosened a 20-day-window
-  rule, not tightened a 50-day one).
-- Unlike v6's dropped `Volume[-1] > Volume[-2]` day-over-day clause (v7),
-  this is a single absolute threshold against a longer, smoother baseline
-  - a 50-day average is less noisy than a 20-day one, so this should
-  actually fire on genuinely elevated days, not on a temporarily low
-  average distorted by a quiet recent stretch.
-- Expect this to cut the funded-trade count substantially versus v7/v8's
-  1.3x/20-day bar - that is the point of the test, not a flaw: the O'Neil
-  study's edge came from being more selective, not less.
-- Ignore today's incomplete session volume throughout.
-- Stocks with missing volume data should be rejected.
-
----
-
-### Rule 5: Breakout Proximity to Short-Term High
-
-Description:
-Price should be pushing to a new short-term high (a breakout entry) rather
-than sitting well below it. This replaces trendline touch-point/slope
-detection, which generated code cannot reliably compute from raw OHLCV.
-
-Condition:
-
-Close >= 0.98 * Highest_Close(20)
+High[C] >= 0.85 * High[A]
 AND
-Close > Close[-1]
-
-Where:
-Highest_Close(20) = the highest closing price over the last 20 trading
-sessions (including today).
-
-Notes:
-- "Within 2% of the 20-day high" while still passing Rule 2's uptrend
-  stack is the breakout-in-an-uptrend setup this strategy is built around.
-- Close > Close[-1] (today closed higher than yesterday) confirms today is
-  an up day, not a stall/reversal day at the highs.
-- Reverted a v4.1 tightening to 0.995 that shrank the sample to a
-  statistically meaningless size without proving beneficial.
+High[C] <= 1.02 * High[A]
 
 ---
 
-### Rule 6: Not Already Extended Too Far
+### Rule 7: Handle Shape
 
 Description:
-Avoid chasing a stock that has already run up too much very recently -
-prefer the early stage of a breakout over a multi-week extended move.
+The handle is a short, shallow, orderly pullback in the upper part of the
+base, holding above its key moving averages and drifting down or sideways
+(not wedging up).
 
-Condition:
+Condition (all must hold):
 
-Close <= 1.25 * Close[-20]
+    5 <= HandleBars <= 22
+    AND
+    HandleDepth <= 0.12
+    AND
+    Low[D] > (High[A] + Low[B]) / 2
+    AND
+    Close[D] >= SMA(Close, 50) at D
+    AND
+    Low[D] > SMA(Close, 200) at D
+    AND
+    HandleSlope <= 0
+
+where `HandleSlope` is the slope from `numpy.polyfit(x, Low, 1)` over
+positions [C + 1, T - 1], with x = 0, 1, 2, ... for those positions.
 
 Notes:
-- Price no more than 25% above where it was 20 trading days ago. This
-  excludes stocks in the middle/late stage of a parabolic run, while still
-  allowing genuine fresh breakouts through.
+- HandleBars is in [5, 22] by construction of Step 1. Keep the check.
+- Handles shorter than the 22-day median performed better (Bulkowski).
+- "Low[D] above the base midpoint" is the upper-half rule.
+- Close >= 50-day SMA is the "above the 10-week MA" rule. Low[D] above the
+  200-day SMA follows TraderLion's "the pattern should form above the
+  200dma", applied to the handle low.
+- HandleSlope > 0 means a wedging (upward-drifting) handle, a known faulty
+  base. The numeric test is researcher-proposed.
 
 ---
 
-### Rule 7: Sector Strength
+### Rule 8: Handle Volume Dry-Up
 
 Description:
-Stock must belong to a top-performing sector, using the SectorRank already
-computed by the backtester/screener (ranked by each sector's average
-30-day return - no Nifty-relative or fundamental data involved).
+Selling pressure should fade during the handle - volume during the handle
+should be below normal.
 
 Condition:
 
-SectorRank <= 10
+mean(Volume over [C + 1, T - 1]) < SMA(Volume, 50) at C
 
 Notes:
-- With only ~15 sectors in the Nifty universe, Top 10 is a meaningful cut
-  without being so tight it starves the strategy of trades.
-- Reverted a v4.1 tightening to Top 5 that shrank the sample to a
-  statistically meaningless size without proving beneficial.
+- Doctrine says "contracting volume" with no number; the 1.0x threshold is
+  researcher-proposed.
 
 ---
 
-### Rule 8: Market Breadth Filter (v6)
+### Rule 9: Breakout Close Above the Pivot
 
 Description:
-Pause new entries when the broader market is itself broad-based weak, even
-if this individual stock's setup looks fine in isolation. A good breakout
-setup is more likely to fail when most other stocks are simultaneously
-breaking down - this is a systemic risk no single-stock filter can catch.
+The signal day must close decisively above the handle high. Close-based
+(not intraday) because close-based signals do not repaint, and the signal
+is only known after the session ends - the backtester enters at the NEXT
+session's open (Open[T + 1]), not at Close[T].
 
 Condition:
 
-MarketBreadth >= 45
+Close[T] > 1.001 * Pivot
 
 Notes:
-- MarketBreadth is the % of the entire universe trading above its own
-  50-day moving average, computed once per day (not specific to this
-  stock) - use the market_breadth parameter directly, do not compute it
-  from this stock's own data.
-- 45 was chosen from the historical distribution of this metric over the
-  backtest period (mean ~57, median ~58, 10th percentile ~28): a cutoff of
-  45 excludes roughly the weakest 30% of trading days (broad corrections)
-  while still allowing the large majority of days through.
+- O'Neil's "handle high + 10 cents" has no INR equivalent; 0.1% is the
+  proxy.
+- "First breakout only" needs no extra check: Step 1 guarantees no High in
+  [C + 1, T - 1] exceeds Pivot, so no earlier close can have broken out.
+  Likewise no close in the handle can sit below Low[D], since D is the
+  lowest low there.
+
+---
+
+### Rule 10: Breakout Volume
+
+Description:
+The breakout needs real participation. Volume does not raise the odds of
+success (OGA 2022: hit rate ~57% in every volume bucket) but it scales the
+size of the move, and very low-volume breakouts are doctrine-invalid.
+
+Condition:
+
+VolRatio >= 1.4
+
+Notes:
+- 40-50% above the 50-day average (TraderLion / IBD). The average
+  excludes the signal day (computed at T - 1).
+
+---
+
+### Rule 11: Not Extended Beyond the Buy Zone
+
+Description:
+A signal day that already closed far above the pivot is a chase: the
+backtester's fill (next session's open) will be at least that extended, and
+beyond 5% the stop distance to the handle low exceeds the 8% risk cap.
+
+Notes on what this rule cannot catch: the screener only sees day T, so a
+gap at Open[T + 1] above 1.05 x Pivot (or below Low[D]) still gets filled.
+That is a known limitation of next-open entry, not something this rule can
+fix.
+
+Condition:
+
+Close[T] <= 1.05 * Pivot
+
+Notes:
+- IBD's 5% buy zone (secondary sources only).
 
 ---
 
 ## Rejection Rules
 
-Reject stock if ANY mandatory filter fails.
+Reject the stock if anchor detection rejects (Steps 1-5), or if ANY
+Mandatory Filter fails. When anchors are found, evaluate all eleven rules
+and report every failure, not just the first.
 
 ---
 
 ## Ranking Rules
 
-After filtering, rank candidates.
+After filtering, rank candidates. Clamp every sub-score to [0, 100] before
+weighting.
 
 ### Rank Score
 
 Score =
-30% Sector_Strength_Score
+25% Breakout_Volume_Score
 +
-30% Volume_Score
+20% Handle_Tightness_Score
 +
-25% Breakout_Quality_Score
+15% Cup_Quality_Score
 +
-15% RSI_Strength_Score
+15% Market_Breadth_Score
++
+15% Relative_Strength_Score
++
+10% Sector_Strength_Score
 
 Where:
 
+Breakout_Volume_Score = (VolRatio - 1.4) / (2.5 - 1.4) * 100
+(1.4x = 0 points, 2.5x or more = 100 points - OGA's strongest bucket)
+
+Handle_Tightness_Score =
+0.5 * ((22 - HandleBars) / 17 * 100)
++ 0.5 * ((0.12 - HandleDepth) / 0.12 * 100)
+(each half clamped to [0, 100] before adding; shorter, shallower handles
+score higher)
+
+Cup_Quality_Score =
+0.5 * ((R_squared - 0.60) / 0.40 * 100)
++ 0.5 * (100 if 0.15 <= CupDepth <= 0.30 else 50)
+(R_squared from Rule 5a; the 15-30% depth sweet spot is a vendor finding,
+so it only nudges ranking)
+
+Market_Breadth_Score = MarketBreadth
+(already 0-100; use the market_breadth parameter directly)
+
+Relative_Strength_Score = (P - 0.70) / 0.30 * 100,
+where P = Close[T] / max(High over the last min(252, len(df)) rows,
+including T)
+(a stock at its 52-week high = 100 points, 30% or more below it = 0;
+OHLCV proxy for IBD Relative Strength)
+
 Sector_Strength_Score = max(0, 100 - (SectorRank - 1) * 10)
-(Rank 1 = 100, declining 10 points per rank)
-
-Volume_Score = min(100, (Volume[-1] / MA(Volume, 50)) * 40)
-(2.5x average volume = 100 points, matching Rule 4's new baseline window)
-
-Breakout_Quality_Score = max(0, 100 - ((Highest_Close(20) - Close) / Highest_Close(20) * 100) * 30)
-(Close exactly at the 20-day high = 100 points, 2% below it = ~40 points)
-
-RSI_Strength_Score = max(0, 100 - abs(Daily_RSI - 65) * 4)
-(Rewards RSI closest to 65, the middle of the strength zone; 0 points at
-RSI 40 or 90)
+(Rank 1 = 100, declining 10 points per rank; same formula as the other
+strategies in this project)
 
 Higher score is better.
 
@@ -385,26 +493,47 @@ Return:
 - Current Price
 - Ideal Entry Price Low
 - Ideal Entry Price High
-- Daily RSI(14)
-- Volume[-1]
-- Volume[-2]
-- 50D Average Volume
-- Volume[-1] / 50D Avg (ratio)
-- 20-Day High
-- Distance From 20-Day High (%)
-- Close vs Close[-20] (%)
+- Ideal Exit Price
+- Initial Stop
+- Pivot
+- Handle Low
+- Cup Depth (%)
+- Cup Bars
+- Handle Bars
+- Handle Depth (%)
+- Cup R²
+- Breakout Volume Ratio (VolRatio)
+- % Above Pivot
+- Market Breadth
 - Rank Score
 
 Where:
 
-Ideal Entry Price Low = Close
-Ideal Entry Price High = Close * 1.01
+Ideal Entry Price Low = Pivot
+Ideal Entry Price High = 1.05 * Pivot
+(the buy zone; the backtester itself enters at the next session's open,
+Open[T + 1])
 
-This mirrors what the backtester actually does (enters at Close on the
-signal day) while giving a small band, since a real fill a moment after
-the signal is rarely at the exact closing tick. Do not use this band to
-change entry logic anywhere else (Mandatory Filters, Ranking Rules,
-backtester) - it is a display-only suggestion for manual order placement.
+Ideal Exit Price = Pivot + 0.61 * (High[C] - Low[B])
+(Bulkowski's measure rule: right-rim-to-cup-low height scaled by his 61%
+target-hit rate, added to the breakout price - a reference level only, not
+a fixed target)
+
+Initial Stop = max(0.99 * HandleLow, 0.92 * Close[T])
+(the tighter of a structural stop just under the handle low and an 8% cap
+below entry - matches the planned paired exit strategy. This is an
+ESTIMATE using Close[T] as a stand-in for entry: the real entry is
+Open[T + 1], and the exit strategy recomputes the stop from that price)
+
+% Above Pivot = (Close[T] / Pivot - 1) * 100
+
+Notes:
+- Entry band, Ideal Exit Price and Initial Stop are display-only
+  suggestions for manual order placement. Do NOT use them to change entry
+  logic anywhere else (Mandatory Filters, Ranking Rules, backtester).
+- Pivot and Handle Low MUST be reported - the paired exit strategy
+  recomputes them with the same definitions (Steps 1-2) and they should
+  match.
 
 Sort:
 

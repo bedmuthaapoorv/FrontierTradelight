@@ -2,17 +2,15 @@
 
 ## Strategy Metadata
 
-Exit Strategy Name: Horizontal Breakout Exit Strategy v1
-Applies To: Horizontal Breakout Momentum (O'Neil Volume) (rules.md)
-specifically - every threshold below (the 10-day failed-breakout window,
-the 8% hard stop, the 3.0x/4.0x ATR trailing multipliers, the 20%-in-15-
-days big-winner override, the 90-day MaxHold) is sized for THIS entry's
-setup (a breakout to a new 20-day high on a volume surge, 1-90 day
-intended hold) and its own stated risk/reward shape. Do NOT assume these
-numbers transfer to a differently-shaped entry (e.g. a pullback-to-
-support entry like Trendline Bounce v1, which already has its own paired
-exit strategy) without re-validating via this project's usual N-sweep +
-multi-slot backtest protocol.
+Exit Strategy Name: Cup and Handle Exit Strategy v1
+Applies To: Cup and Handle Breakout v1 (rules.md) specifically - the
+Pivot and HandleLow definitions below are copied from that entry spec's
+Pattern Anchor Detection Steps 1-2, and every threshold (handle-low stop,
+8% cap, 11-21 session failed-breakout window, 3.0x/4.0x ATR(22) trail,
+20%-in-15-sessions big-winner hold to session 40, 30-session stagnation
+stop, 90-session MaxHold) is sized for that setup. Do NOT pair it with a
+different entry without re-validating - with any other entry, Pivot and
+HandleLow below would describe a pattern that was never there.
 Timeframe: Daily (closing price only, no intraday)
 
 ---
@@ -20,263 +18,324 @@ Timeframe: Daily (closing price only, no intraday)
 ## Data Availability Note
 
 Only the entry price/date and each stock's own daily OHLCV history (before
-and after entry) are available. There is NO Nifty benchmark index data and
-NO earnings calendar available - do not condition any exit logic on either.
-Every rule below must be computable from OHLCV alone.
+and after entry) are available. There is NO Nifty benchmark index data, NO
+earnings calendar, NO market-breadth value and NO values from the entry
+screener (Pivot, Handle Low, Rank Score etc. are NOT passed in) - anything
+the exit needs must be recomputed here from price history. Every rule below
+must be computable from OHLCV alone.
 
 ---
 
 ## Strategy Rationale
 
-Built from a dedicated research pass (see
-`research_notes/Horizontal breakout exit rules/` and
-`reports/Horizontal breakout exit rules.md` in the project root) across
-four angles: O'Neil/CANSLIM sell discipline, ATR/Chandelier-style
-volatility trailing stops, failed-breakout fast-exit detection, and
-profit-taking vs. let-winners-run mechanics. The design below is a
-layered pipeline, not a single rule, because the research consistently
-showed these are separate problems with separate best-evidenced
-solutions - a fast structural check for early failures, a hard percentage
-backstop against catastrophic loss, a volatility-scaled trailing stop to
-manage winners, and a "big winner" override so a proven trend isn't
-clipped too early:
+Built from `reports/Cup and handle exit rules.md` (project root), which
+extends `reports/Cup and handle breakout rules.md`. Read the exit report
+before changing any number - it grades every threshold by evidence.
 
-1. **Failed Breakout (structural, days 1-10):** Bulkowski's pattern
-   statistics show ordinary post-breakout throwbacks (price dipping back
-   toward the breakout level without truly failing) resolve within 3-10
-   days in the large majority of cases (53-66% of breakouts throw back at
-   all). A close that's still meaningfully below the breakout pivot
-   inside that same window is a materially different, and much more
-   likely genuinely-failed, signal - so this project cuts it fast rather
-   than waiting for the wider ATR trailing stop to eventually catch it.
+The design is a layered pipeline, because each layer solves a separate
+problem:
 
-2. **Hard Stop-Loss (O'Neil 7-8% rule):** The single best-evidenced,
-   most specific number found across all four research angles - William
-   O'Neil's rule of capping every breakout trade's loss at 7-8% from the
-   actual entry price, never from a moving average or the pivot. The
-   rationale (recovering from an 8% loss needs an 8.7% gain; recovering
-   from a 25% loss needs a 33% gain) is pure loss-recovery asymmetry, not
-   specific to any one market. This project uses 8% (the looser end of
-   O'Neil's 7-8% band) since Rule 6 of the entry already screens out
-   stocks that have run up more than 25% in 20 days, so entries here tend
-   to be earlier-stage than a fully mature O'Neil pivot buy.
+1. **Initial stop = tighter of handle low and 8%.** Bulkowski: the handle
+   low is "a good place to put a stop". O'Neil: never lose more than 7-8%
+   from the actual fill. The entry caps handle depth at 12%, so for a
+   shallow handle the structural stop governs, and for a deep handle (or an
+   entry that gapped high into the buy zone) the 8% cap governs. Rigorous
+   studies (Kaminski & Lo; Lo & Remorov) say stops on single stocks cut
+   risk and tail losses but do not raise average returns - this stop is
+   tail control, not an alpha source.
 
-3. **ATR Trailing Stop (Chandelier-style, ratchets up only):** Once a
-   trade is not an early failure and hasn't hit the hard stop, this
-   project lets it run under a volatility-scaled trailing stop rather
-   than a fixed target - a 105,708-trade systematic backtest (Setup4Alpha,
-   cited in the profit-taking research notes) found fixed-percentage
-   profit targets were the WORST-performing exit style for trend-
-   following equity trades, while trailing/calendar-style exits were the
-   best. 3.0x ATR sits in the middle of the practitioner-consensus range
-   (2x-4x) for swing/position trades (vs. 1.5x-2x for day trading) found
-   across Chandelier Exit, Turtle Trading, and SuperTrend sources.
+2. **No exit on a close below the pivot alone.** Bulkowski: 62% of cups
+   throw back toward the breakout price, about 10 days for the round trip,
+   and 65% of those recover; high-volume breakouts (which the entry's 1.4x
+   gate selects) throw back 70% of the time. Horizontal Breakout Exit v1's
+   `Close < 0.98 * Pivot` within 10 days would cut many of the best cup
+   trades. Instead, a failed breakout is flagged only in sessions 11-21
+   (after the normal throwback window), and only for trades that never
+   made real progress. This rule is researcher-proposed, not tested.
 
-4. **Big-Winner Override (O'Neil's 8-week-hold rule, adapted):** O'Neil's
-   rule states that a stock gaining 20%+ within 3 weeks of its breakout
-   should be held a MINIMUM of 8 weeks regardless of normal sell signals,
-   because these disproportionately become the market's biggest winners.
-   This project cannot suspend the risk-management exits entirely (that
-   would remove downside protection from what might still reverse), so
-   it implements the same intent mechanically: widen the ATR trailing
-   multiplier from 3.0x to 4.0x once a trade has gained 20%+ within its
-   first 15 trading days (~3 weeks), giving a confirmed big winner
-   meaningfully more room to breathe instead of clipping it with the
-   same tight stop used on an ordinary trade.
+3. **No move to breakeven.** Bulkowski's test on 2,333 double bottoms:
+   moving the stop to breakeven cut winning trades from 1,727 to 1,042 and
+   net profit per share from $2.17 to $1.45. Minervini (secondary source)
+   does move to breakeven, but in a leveraged quick-profit style that is
+   the opposite of this design. The 3x ATR trail passes breakeven on its
+   own once a trade is up about 3 ATRs.
 
-5. **Maximum Holding Period:** Set to 90 trading days, matching this
-   entry's own stated "Trend Trade (1-90 Days)" holding period in
-   rules.md exactly (unlike the Mean Reversion exit strategy's 90-day
-   backstop, which was a deliberate mismatch against that entry's shorter
-   5-40 day horizon - here the two are meant to agree).
+4. **Wide chandelier trail: highest close - 3.0 x ATR(22), 4.0x for big
+   winners.** LeBeau's chandelier default is 22 periods / 3x ATR.
+   Bulkowski's trailing-stop tests improved steadily as stops got wider,
+   and trails tighter than ~36% lost money vs buy-and-hold in his
+   571-stock test. Nothing tighter than 3x ATR.
 
-No fixed take-profit exists anywhere in this exit strategy, on purpose -
-this matches rules.md's own v5 rationale (a trend-following entry's edge
-comes from a few large winners paying for many small losers, and a fixed
-cap on gains destroys that asymmetry) and the profit-taking research's
-finding above. Re-run this project's usual N-sweep + multi-slot backtest
-protocol against the live entry before trusting any of these five
-threshold numbers blindly - they are research-grounded starting points,
-not values already validated against this specific backtester.
+5. **Big-winner hold (O'Neil's 8-week rule).** A gain of 20%+ within the
+   first 15 sessions (~3 weeks) means hold through session 40 (~8 weeks).
+   During that floor the trail cannot exit - only the initial stop or a
+   close below the 50-day average on above-average volume can. After
+   session 40, the 4.0x trail takes over.
+
+6. **Stagnation stop at session 30.** A trade that never got 10% up and is
+   still under +5% after 30 sessions exits. No rigorous evidence exists for
+   any time stop; 30 sessions sits beyond Bulkowski's ~21-session throwback
+   horizon, and 47% of cups retrace substantially within two months.
+
+7. **MaxHold 90 sessions** - matches the entry's "Trend Trade (1-90 Days)"
+   and the Sell tab's hardcoded "/90 trading days".
+
+No profit target and no partial exits in v1. The backtester supports only
+one exit per trade, so scaling out (Minervini's half at +2R, IBD's partial
+at +20-25%) cannot be built, and Bulkowski's measured-move target needs the
+cup low, which can sit beyond the live Sell tab's ~135 rows of history. The
+one target-vs-trail backtest found (Arthur Hill, S&P 500, MA-crossover
+entry) favoured targets, so a paired variant "Cup and Handle Exit Strategy
+v1-T" (full exit at Close >= 1.25 x entry for non-big-winners) is the
+planned comparison - do not add it here.
+
+Left out of v1 on purpose: climax-top sells (preconditions rarely met
+within 90 sessions, no backtest exists), circuit-lock exit deferral (NSE
+lower-circuit lock frequency must first be measured from project data),
+and any intraday-low stop trigger.
+
+Backtest caveats: the leaderboard is pre-cost (real NSE delivery round
+trips cost ~0.24%, mostly STT), so a rule that trades more often looks
+better than it is. Subtract costs from the trades CSV when comparing
+variants. Clear `data/backtest_cache/` before trusting dates - those files
+predate the jugaad_data date fix and are stamped a day early.
 
 ---
 
 ## Entry Reference
 
 Entry Price: Opening price on the trading day immediately after the
-signal day.
+signal day (Open[T + 1]). This is `entry_price` as passed in. `future_df`
+row 0 is that entry day.
+
+Notes:
+- The entry can gap ABOVE 1.05 x Pivot or BELOW 0.99 x HandleLow; the
+  screener cannot see the next open. If it gaps below HandleLow, the
+  initial stop sits above entry_price and Condition 1 fires on session 1's
+  close unless price recovers by then. That is intended - the structure
+  failed before the trade began. Do NOT add a guard against it.
+
+---
+
+## Data Conventions (READ FIRST)
+
+- Both `signal_history_df` and `future_df` have a DatetimeIndex and
+  lowercase columns `open`, `high`, `low`, `close`, `volume`.
+- Use integer positions (`.iloc`) for every row reference, never index
+  labels.
+- **Session numbering:** session s (s = 1, 2, 3, ...) is `future_df` row
+  s - 1. Session 1 is the entry day, and its close IS checked for exits.
+  `SessionsHeld` on session s is s.
+- **Combined history for indicators on session s:**
+  `combined = pd.concat([signal_history_df, future_df.iloc[:s]])`, then
+  drop duplicate index labels keeping the LAST occurrence
+  (`combined = combined[~combined.index.duplicated(keep="last")]`). The
+  live Sell tab passes the entry-day bar in BOTH frames - without this
+  de-duplication, ATR and SMA values double-count that bar.
+- **Volume may be NaN** on the most recent bar in live use (a typed-in live
+  price has no volume). Any condition that requires a volume comparison is
+  treated as NOT met when either side is NaN.
+- Trigger and fill are both on the daily close: when a condition fires on
+  session s, return `ExitDate` = that row's index label and `ExitPrice` =
+  that row's `close`. Never use intraday high/low for triggering or fills.
 
 ---
 
 ## Pre-Trade Calculation (Computed Once at Entry)
 
-ATR_Period = 14
-ATR_Entry = ATR(14) calculated using price history up to and including the
-signal day (the day before entry) - never using data from entry day onward.
+### Step 1: Locate the signal day T
 
-Pivot = Highest_Close(20) calculated using price history up to and
-including the signal day (the same 20-day-high breakout level Rule 5 of
-rules.md required Close to be within 2% of on the signal day).
-
-Initial_SL = EntryPrice - (3.0 * ATR_Entry)
+T is the LAST row of `signal_history_df` whose date is strictly before
+`entry_date` (compare normalized dates:
+`signal_history_df.index.normalize() < pd.Timestamp(entry_date).normalize()`).
+Let p be T's integer position in `signal_history_df`.
 
 Notes:
-- If ATR_Entry or Pivot cannot be computed (insufficient history), do not
-  open this trade - treat it as no exit condition available and let the
-  caller skip it, rather than opening a trade with no stop-loss.
-- Pivot is fixed at entry and never recalculated during the trade - it
-  represents the specific breakout level this trade is betting held as
-  support, not a rolling 20-day high recomputed daily (which would drift
-  upward as the trade itself makes new highs).
+- In the backtest every row of `signal_history_df` is before entry_date,
+  so T is simply the last row. In the live Sell tab `signal_history_df`
+  ends ON the entry date, so "strictly before" is what makes this work in
+  both places. Do not just take the last row.
+
+### Step 2: Recompute Pivot and HandleLow (entry spec Steps 1-2)
+
+Using `signal_history_df` rows only, with p from Step 1:
+
+- C = the position with the highest `high` in the window [p - 22, p - 5]
+  (inclusive). On ties, take the LATEST such position.
+- `Pivot = high` at position C.
+- D = the position with the lowest `low` in [C + 1, p - 1] (inclusive). On
+  ties, take the LATEST such position.
+- `HandleLow = low` at position D.
+
+If p < 23 (not enough rows for the window) or any value is NaN, set
+`Pivot = None` and `HandleLow = None`. Do NOT return None and do NOT skip
+the trade - fall back as described in Step 3.
+
+### Step 3: Initial stop and risk unit
+
+- If HandleLow is available:
+  `InitialStop = max(0.99 * HandleLow, 0.92 * entry_price)`
+- Otherwise: `InitialStop = 0.92 * entry_price`
+
+`R = entry_price - InitialStop` (used only for state reporting; may be
+negative if the entry gapped below the handle low).
 
 ---
 
 ## Daily State Variables
 
-Trailing_SL     : Starts at Initial_SL. Updated daily. Never decreases.
-Highest_Close   : Peak closing price since entry. Starts at EntryPrice.
-ATR_Multiplier  : Starts at 3.0. Widens (once, irreversibly) to 4.0 if the
-                  Big-Winner Override below fires.
+Trailing_SL    : Starts at InitialStop. Updated daily. Never decreases.
+Highest_Close  : Highest close since entry, including the current session.
+                 Starts at entry_price before session 1 is processed.
+ATR_Multiplier : Starts at 3.0. Becomes 4.0 (once, irreversibly) when the
+                 big-winner flag fires.
+BigWinner      : False at entry. Becomes True (once, irreversibly) per
+                 Step 2 below.
 
 ---
 
 ## Daily Update Logic
 
-Run at market close, BEFORE checking exit conditions, using only OHLCV data
-available up to and including that day.
+For each session s = 1, 2, 3, ... (row s - 1 of `future_df`), run these
+steps at the close, BEFORE checking exit conditions, using only data up to
+and including that session.
 
 ### Step 1: Update Highest Close
 
 If Close > Highest_Close:
     Highest_Close = Close
 
-### Step 2: Check Big-Winner Override (Widen ATR Multiplier)
+### Step 2: Big-Winner Flag
 
-If TradingDaysSinceEntry <= 15 AND Close >= 1.20 * EntryPrice:
+If s <= 15 AND Close >= 1.20 * entry_price:
+    BigWinner = True
     ATR_Multiplier = 4.0
 
-Notes:
-- Checked every day up through day 15, but once it fires, ATR_Multiplier
-  stays at 4.0 for the rest of the trade even if price later dips back
-  below the 20% threshold - the override is about recognizing a trade
-  that PROVED itself early, not about the current day's exact gain.
-- If the 20%-within-15-days condition never fires, ATR_Multiplier simply
-  stays at 3.0 for the trade's entire life - this is the ordinary case,
-  not a penalty.
+Once set, both stay set for the rest of the trade even if price falls
+back below +20%.
 
-### Step 3: Ratchet Trailing Stop Upward Only
+### Step 3: Ratchet the Trailing Stop
 
-Recompute ATR(14) using price history up to and including today.
+ATR_Today = ATR(22) (`pandas_ta.atr(high, low, close, length=22)`, last
+value) computed on the de-duplicated `combined` frame for session s.
 
-Candidate_SL = Highest_Close - (ATR_Multiplier * ATR_Today)
+If ATR_Today is a valid number:
+    Candidate_SL = Highest_Close - (ATR_Multiplier * ATR_Today)
+    If Candidate_SL > Trailing_SL:
+        Trailing_SL = Candidate_SL
 
-If Candidate_SL > Trailing_SL:
-    Trailing_SL = Candidate_SL
-Else:
-    Trailing_SL remains unchanged.
+Trailing_SL never decreases. If ATR_Today cannot be computed, leave
+Trailing_SL unchanged (it is never below InitialStop, so the trade stays
+protected).
 
-Notes:
-- The stop only ever moves up, never down, regardless of what today's ATR
-  or ATR_Multiplier computes to. This locks in gains progressively as the
-  trade moves in profit and never gives back protection already earned.
-- Widening ATR_Multiplier from 3.0 to 4.0 (Step 2) can only ever raise or
-  hold Candidate_SL relative to what a stale 3.0x figure would have given
-  on a day where Highest_Close hasn't moved - it cannot suddenly lower an
-  already-ratcheted Trailing_SL, because of the "never decreases" rule
-  here in Step 3.
+### Step 4: Big-winner hold status
+
+HoldFloorActive = (BigWinner AND s <= 40)
 
 ---
 
 ## Exit Conditions
 
-Check ONCE PER DAY at market close, AFTER the daily update logic above runs.
-Evaluate in this priority order; exit on the first condition that fires.
+Check once per session at the close, AFTER the daily update logic. Evaluate
+in this order and exit on the first condition that fires.
 
-### Condition 1: Failed Breakout
+### Condition 1: Initial Stop
 
-If TradingDaysSinceEntry <= 10 AND Close < (0.98 * Pivot):
-    EXIT at that day's close.
+If Close <= InitialStop:
+    EXIT at that session's close.
+    Reason Tag: "InitialStop"
+
+Notes:
+- Active every session, including session 1 and during the big-winner
+  hold floor.
+- Close-based on purpose: an overnight gap below the stop is realized at
+  that session's close, which already includes the gap. Never fill at the
+  stop price itself.
+
+---
+
+### Condition 2: Failed Breakout
+
+If 11 <= s <= 21
+AND Pivot is available
+AND Close < Pivot
+AND Highest_Close < 1.05 * entry_price:
+    EXIT at that session's close.
     Reason Tag: "FailedBreakout"
 
 Notes:
-- Mirrors entry Rule 5's own 2% breakout-proximity buffer (Close >= 0.98 *
-  Highest_Close(20)) so the exit uses the same tolerance the entry used to
-  define "at the breakout level" in the first place - a symmetric band,
-  not an arbitrarily different one.
-- Only checked in the first 10 trading days, matching the research's 3-10
-  day throwback-resolution window - a stock still meaningfully below its
-  own breakout pivot 10 days on has moved past an ordinary throwback and
-  into a genuine failed-breakout pattern.
-- After day 10, a stock trading below Pivot is no longer flagged by this
-  condition specifically - by then, either the Hard Stop-Loss or the ATR
-  Trailing Stop below will have already caught (or will soon catch) any
-  trade that's genuinely deteriorating, without this rule needing to
-  double-fire on the same underlying weakness.
+- Deliberately does NOT fire in sessions 1-10: an ordinary throwback below
+  the pivot is the most common post-breakout behaviour for this pattern.
+- The progress test spares a trade that already ran 5%+ and is now
+  retesting the pivot.
+- If Pivot is unavailable (Pre-Trade Step 2 fallback), this condition
+  never fires.
 
 ---
 
-### Condition 2: Hard Stop-Loss (O'Neil 7-8% Rule)
+### Condition 3: Big-Winner 50-Day Break
 
-If Close <= (0.92 * EntryPrice):
-    EXIT at that day's close.
-    Reason Tag: "HardStop"
+If HoldFloorActive
+AND Close < SMA(close, 50)
+AND Volume > SMA(volume, 50):
+    EXIT at that session's close.
+    Reason Tag: "BigWinner50DMA"
 
-Notes:
-- Active for the entire trade, not just the first 10 days - this is the
-  absolute backstop against a slow bleed that never triggers Condition 1
-  (e.g. Pivot sits below EntryPrice, so a decline can pass Condition 1's
-  Pivot-relative check while still being a meaningful loss in its own
-  right).
-- 8% from EntryPrice specifically (not from Highest_Close, not from a
-  moving average) - this is O'Neil's rule exactly as researched: the
-  measurement point is the actual entry fill, because the rule exists to
-  cap realized loss on THIS trade, not to protect unrealized gains (that
-  is the Trailing Stop's job, Condition 3 below).
+Where both SMAs are the 50-row simple means on the de-duplicated
+`combined` frame for session s, ending at session s (inclusive). If either
+SMA cannot be computed, or Volume is NaN, this condition is NOT met.
 
 ---
 
-### Condition 3: ATR Trailing Stop
+### Condition 4: ATR Trailing Stop
 
-If Close <= Trailing_SL:
-    EXIT at that day's close.
+If NOT HoldFloorActive
+AND Trailing_SL > InitialStop
+AND Close <= Trailing_SL:
+    EXIT at that session's close.
     Reason Tag: "TSL"
 
 Notes:
-- Trailing_SL already incorporates whichever ATR_Multiplier (3.0 or the
-  widened 4.0) applies as of today, per the Daily Update Logic above.
-- No fixed take-profit exists in this strategy - see the Strategy
-  Rationale section for why. The ONLY exit for a winning trade that
-  survives Conditions 1 and 2 is this trailing stop eventually giving
-  back its multiplier's worth of ATR from the peak.
+- `Trailing_SL > InitialStop` keeps the tags clean: until the trail has
+  risen above the initial stop, Condition 1 is the stop that applies.
+- Suppressed during the big-winner hold floor (sessions up to 40 for
+  big winners); the trail keeps ratcheting during the floor, it just
+  cannot exit. From session 41 it applies again, at 4.0x.
+- There is no profit target - this trail is the only exit for a winning
+  trade outside the hold floor.
 
 ---
 
-### Condition 4: Maximum Holding Period
+### Condition 5: Stagnation (Time) Stop
 
-If TradingDaysSinceEntry >= 90:
-    EXIT at that day's close.
-    Reason Tag: "MaxHold"
+If s >= 30
+AND Close < 1.05 * entry_price
+AND Highest_Close < 1.10 * entry_price:
+    EXIT at that session's close.
+    Reason Tag: "TimeStop"
 
 Notes:
-- Matches rules.md's own stated "Trend Trade (1-90 Days)" holding period
-  for this entry exactly - unlike the Mean Reversion exit strategy's
-  90-day backstop (a deliberate mismatch there against that entry's
-  shorter 5-40 day horizon), here the exit's outer bound and the entry's
-  own stated horizon are meant to agree.
-- Expect this to rarely fire in practice, same as observed for the Mean
-  Reversion exit strategy's own 90-day backstop - the Trailing Stop
-  (Condition 3) should close the large majority of trades well before
-  reaching this backstop. Re-check this assumption against this specific
-  entry's actual backtest results rather than assuming it transfers.
+- A "no progress" exit, not a cap on winners: a trade that ever closed 10%+
+  above entry is never stopped by this rule.
+
+---
+
+### Condition 6: Maximum Holding Period
+
+If s >= 90:
+    EXIT at that session's close.
+    Reason Tag: "MaxHold"
 
 ---
 
 ## Exit Priority Order
 
-1. FailedBreakout  <- checked first each day, only within the first 10 days
-2. HardStop        <- 8% loss backstop, active for the whole trade
-3. TSL             <- ATR trailing stop (3.0x, or 4.0x after a big-winner override)
-4. MaxHold         <- final backstop at 90 trading days
+1. InitialStop     <- every session, including during the hold floor
+2. FailedBreakout  <- sessions 11-21 only, no-progress trades only
+3. BigWinner50DMA  <- only while the big-winner hold floor is active
+4. TSL             <- chandelier trail, suppressed during the hold floor
+5. TimeStop        <- session 30+, no-progress trades only
+6. MaxHold         <- session 90
 
 Only one exit tag is assigned per trade.
 
@@ -284,10 +343,13 @@ Only one exit tag is assigned per trade.
 
 ## Fallback
 
-If no condition above triggers before the available data ends, do not exit -
-the backtester itself force-closes any still-open trade at the last
-available close, tagged "RangeEnd". Exit strategies never need to implement
-this fallback themselves.
+If no condition fires before `future_df` ends, return None. The backtester
+then holds the trade to the end of the date range and closes it at the last
+available close, tagged "RangeEnd" - do NOT implement RangeEnd here.
+Returning None means "still open / hold to range end", never "skip this
+trade". Every missing-data path above already falls back to a defined stop
+(0.92 x entry_price), so never return None just because Pivot, HandleLow,
+ATR or an SMA could not be computed.
 
 ---
 
@@ -297,33 +359,30 @@ In addition to resolve_exit(), also implement:
 
 describe_state(entry_price, entry_date, signal_history_df, future_df)
 
-This replays the same daily update logic as resolve_exit() (same
-Highest_Close tracking, same Big-Winner Override check, same Trailing_SL
-ratchet) but for a trade that has NOT exited - it returns the exit logic's
-internal state as of the last available day instead of an exit event, so
-sell_screener.py can explain *why* a holding is still a HOLD (how far price
-is from the trailing stop, how many days until MaxHold, whether the
-big-winner override has already widened its stop) rather than just saying
-"not met yet."
+It runs exactly the same Pre-Trade Calculation and Daily Update Logic as
+resolve_exit() over every row of `future_df`, but does not exit - it
+returns the state as of the last row.
+
+Let EffectiveStop = InitialStop if (HoldFloorActive or Trailing_SL <=
+InitialStop) else Trailing_SL.
 
 Return a dict with:
-- TrailingStop         (current trailing stop level)
-- ATRMultiplier         (3.0 or 4.0, whichever currently applies)
-- HighestClose          (peak closing price tracked since entry)
-- LastClose             (most recent close in future_df)
-- DistanceToStopPct     ((LastClose - TrailingStop) / LastClose * 100)
-- DistanceToHardStopPct ((LastClose - (0.92 * entry_price)) / LastClose * 100)
-- DaysHeld              (trading days since entry)
+- TrailingStop          (EffectiveStop - the stop that would actually
+                         trigger today; the Sell tab displays this key)
+- DistanceToStopPct     ((LastClose - EffectiveStop) / LastClose * 100)
+- DaysHeld              (number of rows in future_df)
 - DaysToMaxHold         (90 - DaysHeld, floored at 0)
-- BigWinnerOverrideActive (true if ATRMultiplier is currently 4.0)
-- AtRiskOfFailedBreakout  (true if DaysHeld <= 10 AND LastClose is within
-                          2% above Pivot - i.e. still inside the Failed
-                          Breakout condition's window and close to
-                          triggering it, so the Sell tab can warn before
-                          it actually fires, not just report it after
-                          the fact)
+- LastClose             (last close in future_df)
+- HighestClose          (Highest_Close)
+- InitialStop
+- Pivot                 (None if unavailable)
+- HandleLow             (None if unavailable)
+- ATRMultiplier         (3.0 or 4.0)
+- BigWinner             (true/false)
+- HoldFloorActive       (true/false)
+- InFailedBreakoutWindow (true if 11 <= DaysHeld <= 21 and
+                          Highest_Close < 1.05 * entry_price)
 
-Return None if state cannot be computed (e.g. insufficient history).
+Return None only if `future_df` is empty.
 
-The backtester never calls this - only the live Sell tab does, to build a
-richer explanation for holds.
+The backtester never calls this - only the live Sell tab does.
