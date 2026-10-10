@@ -41,3 +41,7 @@ Strategies/universe_cache.json
 Strategies/US/data/*
 !Strategies/US/data/strategy_stats.csv
 !Strategies/US/data/holdings.csv
+
+# Strategy rule docs
+rules.md
+exit_rules.md
