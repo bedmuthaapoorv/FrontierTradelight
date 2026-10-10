@@ -3,112 +3,135 @@ import numpy as np
 import pandas_ta as ta
 
 def evaluate_stock(symbol, df, universe, sector_ranks, market_breadth):
-    failed_rules = []
-    details = {}
-    
+    results = {
+        "Symbol": symbol,
+        "Passed": False,
+        "ClosenessScore": 0.0,
+        "FailedRules": [],
+        "Details": {}
+    }
+
     try:
-        if df is None or len(df) < 50:
-            return {"Symbol": symbol, "Passed": False, "ClosenessScore": 0.0, "FailedRules": ["Insufficient data"], "Details": {}}
+        if len(df) < 130:
+            results["FailedRules"].append("Insufficient data length")
+            return results
 
         # Data preparation
         close = df['close'].values
-        volume = df['volume'].values
-        high = df['high'].values
         low = df['low'].values
-        
+        high = df['high'].values
+        open_ = df['open'].values
+        vol = df['volume'].values
+        idx = np.arange(len(df))
+        today_idx = len(df) - 1
+
         # Indicators
-        ma20 = ta.sma(df['close'], length=20)
+        atr = ta.atr(df['high'], df['low'], df['close'], length=14)
         ma50 = ta.sma(df['close'], length=50)
         ma126 = ta.sma(df['close'], length=126)
+        ma20_vol = ta.sma(df['volume'], length=20)
         rsi = ta.rsi(df['close'], length=14)
-        vol_ma50 = ta.sma(df['volume'], length=50)
+
+        # Rule 1: Pivot Detection
+        pivots = []
+        # Lookback 90 days, exclude last 3
+        for i in range(today_idx - 90, today_idx - 3):
+            if (low[i] < low[i-1] and low[i] < low[i-2] and low[i] < low[i-3] and
+                low[i] < low[i+1] and low[i] < low[i+2] and low[i] < low[i+3]):
+                pivots.append(i)
+
+        valid_trendline = False
+        slope = 0
+        tl_today = 0
         
-        # Values for logic
-        curr_close = close[-1]
-        prev_close = close[-2]
-        prev20_close = close[-21] if len(close) > 20 else close[0]
-        curr_vol = volume[-1]
-        curr_vol_ma50 = vol_ma50.iloc[-1]
+        if len(pivots) >= 2:
+            p2 = pivots[-1]
+            for p1 in reversed(pivots[:-1]):
+                if p2 - p1 >= 25:
+                    s = (low[p2] - low[p1]) / (p2 - p1)
+                    if s > 0:
+                        # Validate unbroken
+                        broken = False
+                        for j in range(p2 + 1, today_idx):
+                            tl_j = low[p2] + s * (j - p2)
+                            if close[j] < (tl_j - 0.75 * atr.iloc[j]):
+                                broken = True
+                                break
+                        if not broken:
+                            valid_trendline = True
+                            slope = s
+                            tl_today = low[p2] + s * (today_idx - p2)
+                            break
         
-        # Rule 1: Liquidity
-        turnover_ma20 = ta.sma(df['volume'] * df['close'], length=20).iloc[-1]
-        if turnover_ma20 < 50000000 or curr_close < 50:
-            failed_rules.append("Rule 1: Liquidity floor (Turnover < 5cr or Price < 50)")
-            
-        # Rule 2: Trend
-        if not (curr_close > ma20.iloc[-1] > ma50.iloc[-1] > ma126.iloc[-1]):
-            failed_rules.append("Rule 2: Moving average stack not aligned")
-            
-        # Rule 3: RSI
-        curr_rsi = rsi.iloc[-1]
-        if not (55 <= curr_rsi <= 75):
-            failed_rules.append(f"Rule 3: RSI outside range (55-75): {curr_rsi:.2f}")
-            
-        # Rule 4: Volume
-        if np.isnan(curr_vol_ma50) or curr_vol < 2.5 * curr_vol_ma50:
-            failed_rules.append("Rule 4: Volume confirmation failed")
-            
-        # Rule 5: Proximity
-        h20 = df['close'].rolling(20).max().iloc[-1]
-        if not (curr_close >= 0.98 * h20 and curr_close > prev_close):
-            failed_rules.append("Rule 5: Not pushing to 20-day high")
-            
-        # Rule 6: Extension
-        if curr_close > 1.25 * prev20_close:
-            failed_rules.append("Rule 6: Already extended too far")
-            
-        # Rule 7: Sector
+        if not valid_trendline:
+            results["FailedRules"].append("No valid rising trendline")
+            return results
+
+        # Rule 2: Bounce
+        if not (low[today_idx] <= tl_today * 1.02 and 
+                close[today_idx] >= tl_today and 
+                close[today_idx] > open_[today_idx] and 
+                close[today_idx] <= tl_today * 1.06):
+            results["FailedRules"].append("Today is not a genuine bounce")
+            return results
+
+        # Rule 3: Backdrop
+        if not (close[today_idx] > ma126.iloc[today_idx] and ma50.iloc[today_idx] > ma126.iloc[today_idx]):
+            results["FailedRules"].append("Broader trend backdrop not intact")
+            return results
+
+        # Rule 4: RSI
+        rsi_val = rsi.iloc[today_idx]
+        if not (35 <= rsi_val <= 55):
+            results["FailedRules"].append(f"RSI outside range (63.5)" if rsi_val > 55 else "RSI too low")
+            return results
+
+        # Rule 5: Liquidity
+        if not (ma20_vol.iloc[today_idx] >= 100000 and close[today_idx] >= 50):
+            results["FailedRules"].append("Minimum liquidity floor not met")
+            return results
+
+        # Rule 6: Sector
         rank = sector_ranks.get(symbol, 99)
         if rank > 10:
-            failed_rules.append(f"Rule 7: Sector rank {rank} not in top 10")
-            
-        # Rule 8: Breadth
-        if market_breadth < 45:
-            failed_rules.append(f"Rule 8: Market breadth {market_breadth} below 45")
+            results["FailedRules"].append(f"Sector rank {rank} not in top 10")
+            return results
 
-        # Details
-        details.update({
-            "Company Name": universe.get(symbol, {}).get("Name", "Unknown"),
-            "Sector": universe.get(symbol, {}).get("Sector", "Unknown"),
-            "Sector Rank": rank,
-            "Current Price": curr_close,
-            "Ideal Entry Price Low": curr_close,
-            "Ideal Entry Price High": curr_close * 1.01,
-            "Daily RSI(14)": curr_rsi,
-            "Volume[-1]": curr_vol,
-            "Volume[-2]": volume[-2],
-            "50D Average Volume": curr_vol_ma50,
-            "Volume[-1] / 50D Avg (ratio)": curr_vol / curr_vol_ma50 if curr_vol_ma50 > 0 else 0,
-            "20-Day High": h20,
-            "Distance From 20-Day High (%)": ((h20 - curr_close) / h20) * 100,
-            "Close vs Close[-20] (%)": ((curr_close - prev20_close) / prev20_close) * 100
-        })
+        # Rule 7: Breadth
+        if market_breadth < 40:
+            results["FailedRules"].append("Market breadth too low")
+            return results
 
-        # Ranking
-        passed = len(failed_rules) == 0
-        score = 0.0
-        if passed:
-            s_score = max(0, 100 - (rank - 1) * 10)
-            v_score = min(100, (curr_vol / curr_vol_ma50) * 40)
-            b_score = max(0, 100 - ((h20 - curr_close) / h20 * 100) * 30)
-            r_score = max(0, 100 - abs(curr_rsi - 65) * 4)
-            score = (0.3 * s_score) + (0.3 * v_score) + (0.25 * b_score) + (0.15 * r_score)
+        # Scoring
+        slope_pct = slope / low[p2]
+        tl_score = min(100, slope_pct * 4000)
+        sec_score = max(0, 100 - (rank - 1) * 10)
+        bounce_score = max(0, 100 - ((close[today_idx] - tl_today) / tl_today * 100) * 25)
+        rsi_score = max(0, 100 - abs(rsi_val - 45) * 4)
         
-        details["Rank Score"] = score
-        
-        return {
-            "Symbol": symbol,
-            "Passed": passed,
+        score = (0.30 * tl_score) + (0.25 * sec_score) + (0.25 * bounce_score) + (0.20 * rsi_score)
+
+        results.update({
+            "Passed": True,
             "ClosenessScore": score,
-            "FailedRules": failed_rules,
-            "Details": details
-        }
+            "Details": {
+                "Company Name": universe.get(symbol, {}).get("Name", "N/A"),
+                "Sector": universe.get(symbol, {}).get("Sector", "N/A"),
+                "Sector Rank": rank,
+                "Current Price": close[today_idx],
+                "Ideal Entry Price Low": tl_today,
+                "Ideal Entry Price High": close[today_idx],
+                "Ideal Exit Price": tl_today + 2.5 * atr.iloc[today_idx],
+                "Swing Duration (Days)": "5-40",
+                "Trendline Value (Today)": tl_today,
+                "Trendline Slope (% per day)": slope_pct * 100,
+                "Daily RSI(14)": rsi_val,
+                "20D Average Volume": ma20_vol.iloc[today_idx],
+                "Rank Score": score
+            }
+        })
+        return results
 
     except Exception as e:
-        return {
-            "Symbol": symbol,
-            "Passed": False,
-            "ClosenessScore": 0.0,
-            "FailedRules": [f"Calculation error: {e}"],
-            "Details": {}
-        }
+        results["FailedRules"].append(f"Calculation error: {e}")
+        return results

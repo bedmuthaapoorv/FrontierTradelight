@@ -407,6 +407,12 @@ export interface EventWatcherRow {
   MatchedKeyword: string
   MatchedSymbols: string
   Source: 'LIVE' | 'HISTORICAL'
+  /** "title" = company and keyword both in the headline; "title+body" = one
+   * of them only in the release body (Snippet shows the triggering text).
+   * Empty for rows saved before body matching existed. */
+  MatchedIn: 'title' | 'title+body' | ''
+  Amounts: string
+  Snippet: string
 }
 
 export interface EventWatcherState {
@@ -423,6 +429,7 @@ export interface ScannedReleaseRow {
   Matched: boolean
   MatchedKeyword: string
   MatchedSymbols: string
+  MatchedIn?: 'title' | 'title+body' | ''
   Source: 'LIVE' | 'HISTORICAL'
 }
 
