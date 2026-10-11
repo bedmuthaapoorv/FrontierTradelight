@@ -45,3 +45,6 @@ Strategies/US/data/*
 # Strategy rule docs
 rules.md
 exit_rules.md
+
+# Common Method Library write lock (Strategies/Default/common_methods/)
+.lock

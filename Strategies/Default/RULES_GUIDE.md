@@ -171,6 +171,34 @@ Limit:
 Top 20 Stocks
 ```
 
+## Router strategies (switching between strategies by market regime)
+
+Instead of one strategy, `rules.md` can route between several saved
+strategies. `generate_screener.py` switches to router mode when `rules.md`
+contains a `## Referenced Strategies` section:
+
+```markdown
+## Referenced Strategies
+- Trendline: ../Rules_backup/<trendline file>.md
+- Breakout: ../Rules_backup/<breakout file>.md
+
+### Default Strategy: Trendline
+
+## Routing Rules
+Use Breakout when MarketBreadth is above 60, otherwise Trendline.
+```
+
+- Each `- Key: path` entry is compiled separately into
+  `generated_strategies/<Key>.py`. Paths are relative to the folder you run
+  the script from, and every file must exist.
+- `### Default Strategy:` is optional. If you set it, it must be one of the
+  keys, and it is used as the fallback.
+- `## Routing Rules` must be the last section. Gemini turns it into a
+  `select_strategy(market_breadth)` function.
+- The resulting `generated_rules.py` exposes the same `evaluate_stock(...)`
+  interface as a single strategy, so the screener and backtester work
+  unchanged.
+
 ## Tips for writing good rules
 
 - **Be numeric, not vibes-based.** "Volume should be picking up" is
@@ -199,3 +227,39 @@ when starting a new strategy — swap out the rules, weights, and output
 columns, but keep the same sections and level of precision. Previous
 strategy versions are kept in [`Rules_backup/`](../Rules_backup/) for
 reference or restoring via the Backtest tab's dropdown.
+
+## Common Method Library
+
+Generated strategies share verified helper functions from
+[`common_methods/`](common_methods/) (pivot detection, rising-trendline
+fitting, pandas_ta column selection, liquidity and sector-rank checks, …).
+When `generate_screener.py` compiles `rules.md`, Gemini is shown the
+library's catalog and must call these methods instead of re-implementing
+them, so the same rule compiles to the same logic every time.
+
+- **New methods are added automatically** when Gemini proposes reusable
+  logic that isn't in the library yet, but only after
+  [`method_library.py`](method_library.py)'s checks pass: one documented
+  function per file, allowed imports only (numpy, pandas, pandas_ta, scipy,
+  math), and a smoke test of the full strategy on cached price data. If the
+  checks fail twice, the method is pasted into that strategy's own code
+  instead and the library is left untouched.
+- **Strategy code may not contain helper functions or for/while loops.**
+  Any algorithm has to live in the library. When Gemini's code works but
+  keeps a loop inline, one extra focused call asks it to move that loop
+  into a library method. The refactor is accepted only if the strategy
+  returns identical results before and after on cached data; otherwise
+  the working original is kept as-is. Broken code gets one full retry.
+  The run log lists the methods reused and added.
+- **Methods are immutable.** Never edit a saved method file - old
+  strategies and backtests depend on its exact behaviour. To change one,
+  add a new file with a new name (e.g. `find_rising_trendline_v2.py`, one
+  function with the same name as the file and a docstring).
+- Spell out precise algorithms in `rules.md` exactly as before - the
+  library only changes how they are implemented, not what you specify.
+  Give exact ranges (e.g. "positions `T-90` to `T-4` inclusive, where
+  `T` is today's row") rather than phrases like "the last 90 days" -
+  Gemini can read a loose phrase differently on each compile, which
+  silently changes which trades the strategy takes.
+- India only for now: the US side (`Strategies/US/`) still generates
+  everything inline.
