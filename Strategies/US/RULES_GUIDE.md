@@ -16,13 +16,8 @@ fetches per stock. Don't invent a metric it has no way to calculate. You have:
   `close`, `volume`. You can reference relative days like `Volume[-1]`
   (yesterday), `Volume[-2]` (the day before), or ranges like `HighestHigh(252)`
   (highest high over the last 252 trading days ≈ 1 year).
-- **Delivery percentage** (`delivery_pct`) — NSE's published % of traded
-  volume that actually settled as delivery (vs. intraday-only churn), same
-  ~400-day history as OHLCV. A high delivery % on a strong-volume day is a
-  proxy for genuine buying (investors taking the stock home) rather than
-  speculative intraday flow that's likely to reverse. May be `NaN` for
-  cached history fetched before this field was tracked - handle missing
-  values rather than assuming it's always present.
+- **No delivery percentage** — the India side exposes NSE's `delivery_pct`;
+  Alpaca has no equivalent, so don't write rules that depend on it.
 - **Standard technical indicators** computed from that price history — RSI,
   moving averages, etc. (the generator uses `pandas_ta`, so anything that
   library supports is fair game).
@@ -31,7 +26,7 @@ fetches per stock. Don't invent a metric it has no way to calculate. You have:
 - **Market breadth** — a `MarketBreadth` value (0-100: % of the entire
   universe currently trading above its own 50-day moving average),
   computed once per day across all stocks, not specific to any one stock.
-  It's a stand-in for a Nifty benchmark regime filter (no external index
+  It's a stand-in for an S&P 500 benchmark regime filter (no external index
   data is available) — useful for a rule like "pause entries when the
   broader market itself is weak, even if this stock's setup looks fine."
 - **Company/sector metadata** — name, sector, current price.
@@ -63,7 +58,7 @@ drive logic, but helps Gemini and future readers understand intent.
 ## Strategy Metadata
 
 Strategy Name: Trendline Support Momentum
-Market: India (NSE/BSE)
+Market: US (S&P 500)
 Timeframe: Daily
 Holding Period: Swing Trade (1-30 Days)
 ```
@@ -170,6 +165,34 @@ Limit:
 
 Top 20 Stocks
 ```
+
+## Router strategies (switching between strategies by market regime)
+
+Instead of one strategy, `rules.md` can route between several saved
+strategies. `generate_screener.py` switches to router mode when `rules.md`
+contains a `## Referenced Strategies` section:
+
+```markdown
+## Referenced Strategies
+- Trendline: ../Rules_backup/<trendline file>.md
+- Breakout: ../Rules_backup/<breakout file>.md
+
+### Default Strategy: Trendline
+
+## Routing Rules
+Use Breakout when MarketBreadth is above 60, otherwise Trendline.
+```
+
+- Each `- Key: path` entry is compiled separately into
+  `generated_strategies/<Key>.py`. Paths are relative to the folder you run
+  the script from, and every file must exist.
+- `### Default Strategy:` is optional. If you set it, it must be one of the
+  keys, and it is used as the fallback.
+- `## Routing Rules` must be the last section. Gemini turns it into a
+  `select_strategy(market_breadth)` function.
+- The resulting `generated_rules.py` exposes the same `evaluate_stock(...)`
+  interface as a single strategy, so the screener and backtester work
+  unchanged.
 
 ## Tips for writing good rules
 

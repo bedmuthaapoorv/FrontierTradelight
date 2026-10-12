@@ -236,8 +236,9 @@ export default function EventWatcher() {
           <div>
             <div className="mb-0.5 text-[15px] font-extrabold">Matched announcements</div>
             <p className="max-w-[660px] text-[12.5px] leading-relaxed text-gray-400">
-              Only releases mentioning both a commissioning/induction-type keyword and a watchlisted shipbuilder are
-              kept &mdash; sorted newest first.
+              A release is kept when it has both an event keyword and a watchlisted company, read from the headline
+              and the full release body (at least one of the two must be in the headline) &mdash; sorted newest
+              first. Rupee amounts quoted in the release are shown under the title.
             </p>
           </div>
 
@@ -293,6 +294,14 @@ export default function EventWatcher() {
                             </a>
                           ) : (
                             row.Title
+                          )}
+                          {row.Amounts && (
+                            <div className="mt-1 font-mono text-[11px] font-semibold text-gray-600">{row.Amounts}</div>
+                          )}
+                          {row.MatchedIn === 'title+body' && row.Snippet && (
+                            <div className="mt-1 text-[11px] leading-snug text-gray-400">
+                              <span className="font-mono font-bold text-gray-500">from body:</span> {row.Snippet}
+                            </div>
                           )}
                         </td>
                         <td className="px-4 py-2.5">
@@ -429,7 +438,7 @@ export default function EventWatcher() {
                         row.Matched ? 'bg-accent-soft text-accent' : 'bg-gray-100 text-gray-400'
                       }`}
                     >
-                      {row.Matched ? 'MATCHED' : 'FILTERED OUT'}
+                      {row.Matched ? (row.MatchedIn === 'title+body' ? 'MATCHED (BODY)' : 'MATCHED') : 'FILTERED OUT'}
                     </span>
                   </div>
                   <div className="text-[12px] leading-snug text-gray-700">

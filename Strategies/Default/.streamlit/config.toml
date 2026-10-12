@@ -1,5 +1,0 @@
-[server]
-# Auto-rerun the app whenever a source file changes on disk, instead of
-# showing a "Source file changed" prompt that requires manually clicking
-# Rerun (or reloading the page) to pick up code edits.
-runOnSave = true

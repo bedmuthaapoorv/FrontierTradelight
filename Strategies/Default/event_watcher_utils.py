@@ -49,6 +49,7 @@ import json
 import os
 import re
 from datetime import date, datetime, timedelta, timezone
+from html import unescape
 from urllib.parse import urlparse
 
 import feedparser
@@ -111,6 +112,11 @@ DEFAULT_WATCHLIST: dict[str, list[str]] = {
     # in the headline, not its full name - "bdl" is included as a fragment
     # for that reason, even though it's a short, generic-looking acronym.
     "BDL": ["bharat dynamics", "bdl"],
+    # PIB headlines use the bare ticker ("...2,000th aero-engine at HAL
+    # Koraput"), so "hal" is a needed fragment - safe only because
+    # _match_symbols matches names on word boundaries, not as substrings
+    # ("shall", "challenge" and "hall" all contain "hal").
+    "HAL": ["hindustan aeronautics", "hal"],
 }
 
 # PIB's actual commissioning/induction headlines usually name the VESSEL or
@@ -166,7 +172,7 @@ DEFAULT_EVENT_KEYWORDS = [
     "contract worth",
 ]
 
-COLUMNS = ["Date", "Title", "Link", "MatchedKeyword", "MatchedSymbols", "Source"]
+COLUMNS = ["Date", "Title", "Link", "MatchedKeyword", "MatchedSymbols", "Source", "MatchedIn", "Amounts", "Snippet"]
 
 
 def _load_keyword_config() -> dict:
@@ -249,7 +255,11 @@ def set_keyword_config(payload: dict) -> dict:
 
 def _match_symbols(title: str) -> list[str]:
     lowered = title.lower()
-    found = {symbol for symbol, names in WATCHLIST.items() if any(name in lowered for name in names)}
+    found = {
+        symbol
+        for symbol, names in WATCHLIST.items()
+        if any(re.search(rf"\b{re.escape(name)}\b", lowered) for name in names)
+    }
     for phrase, symbol in VESSEL_CLASS_TO_SYMBOL.items():
         if phrase in lowered:
             found.add(symbol)
@@ -264,6 +274,81 @@ def _match_keyword(title: str) -> str | None:
     return None
 
 
+_AMOUNT_RE = re.compile(r"Rs\.?\s*[\d,]+(?:\.\d+)?\s*(?:lakh\s+)?crore", re.IGNORECASE)
+
+
+def _entry_body(entry: dict) -> str:
+    """Plain text of the release body. The pib-rss feed carries the full
+    release as HTML in `content` (summary is cut to ~600 chars), so no PIB
+    page fetch is needed - falls back to summary if content is missing."""
+    content = entry.get("content")
+    html = content[0].get("value", "") if content else entry.get("summary", "")
+    return " ".join(unescape(re.sub(r"<[^>]+>", " ", html)).split())
+
+
+def _snippet(body: str, patterns: list[str], radius: int = 130) -> str:
+    for pattern in patterns:
+        m = re.search(pattern, body, re.IGNORECASE)
+        if m:
+            start, end = max(0, m.start() - radius), min(len(body), m.end() + radius)
+            return ("..." if start else "") + body[start:end].strip() + ("..." if end < len(body) else "")
+    return ""
+
+
+def _evaluate_entry(entry: dict) -> dict:
+    """Decides whether a release is a match, looking at title AND body.
+
+    A match needs a watchlisted symbol and an event keyword, but at least one
+    of the two must appear in the TITLE - the other may come from the body.
+    That catches "HAL Koraput delivers 2,000th aero-engine" (company in the
+    title, keyword only in the body) and "MoD inks Rs 5,000 crore deal for
+    helicopters" (keyword in the title, HAL only in the body), without
+    matching every release whose body merely mentions a listed company in
+    passing. MatchedIn says which case it was; Snippet shows the body text
+    that triggered a "title+body" match so it can be judged at a glance."""
+    title = entry.get("title", "")
+    body = _entry_body(entry)
+    title_symbols, title_keyword = _match_symbols(title), _match_keyword(title)
+    symbols = _match_symbols(f"{title}. {body}")
+    keyword = title_keyword or _match_keyword(body)
+    matched = bool(symbols and keyword and (title_symbols or title_keyword))
+    matched_in = "title" if (title_symbols and title_keyword) else "title+body"
+
+    snippet = ""
+    if matched and matched_in == "title+body":
+        if not title_keyword:
+            patterns = [re.escape(keyword)]
+        else:
+            patterns = [
+                rf"\b{re.escape(name)}\b" for sym in symbols if sym not in title_symbols for name in WATCHLIST.get(sym, [])
+            ] + [re.escape(phrase) for phrase, sym in VESSEL_CLASS_TO_SYMBOL.items() if sym in symbols]
+        snippet = _snippet(body, patterns)
+
+    amounts = list(dict.fromkeys(" ".join(a.split()) for a in _AMOUNT_RE.findall(f"{title}. {body}")))[:4]
+    return {
+        "symbols": symbols,
+        "keyword": keyword,
+        "matched": matched,
+        "matched_in": matched_in if matched else "",
+        "snippet": snippet,
+        "amounts": "; ".join(amounts),
+    }
+
+
+def _evaluation_to_row(entry: dict, ev: dict, source: str, fallback_date: str) -> dict:
+    return {
+        "Date": entry.get("published", "") or entry.get("updated", "") or fallback_date,
+        "Title": entry.get("title", ""),
+        "Link": entry.get("link", ""),
+        "MatchedKeyword": ev["keyword"],
+        "MatchedSymbols": ",".join(ev["symbols"]),
+        "Source": source,
+        "MatchedIn": ev["matched_in"],
+        "Amounts": ev["amounts"],
+        "Snippet": ev["snippet"],
+    }
+
+
 def _load_meta() -> dict:
     if not os.path.exists(EVENT_WATCHER_META_PATH):
         return {"last_checked": None, "last_error": None}
@@ -276,14 +361,15 @@ def _save_meta(meta: dict) -> None:
         json.dump(meta, f)
 
 
-def _entry_to_scanned_row(entry: dict, matched: bool, symbols: list[str], keyword: str | None, source: str) -> dict:
+def _entry_to_scanned_row(entry: dict, ev: dict, source: str) -> dict:
     return {
         "Date": entry.get("published", "") or entry.get("updated", ""),
         "Title": entry.get("title", ""),
         "Link": entry.get("link", ""),
-        "Matched": matched,
-        "MatchedKeyword": keyword or "",
-        "MatchedSymbols": ",".join(symbols),
+        "Matched": ev["matched"],
+        "MatchedKeyword": ev["keyword"] or "",
+        "MatchedSymbols": ",".join(ev["symbols"]),
+        "MatchedIn": ev["matched_in"],
         "Source": source,
     }
 
@@ -321,7 +407,11 @@ def load_events() -> pd.DataFrame:
     # keep_default_na=False: a blank Link (simulated rows have none) must
     # stay "" on reload, not become NaN - NaN isn't valid JSON and breaks
     # every response this feeds.
-    return pd.read_csv(EVENT_WATCHER_EVENTS_PATH, keep_default_na=False)
+    df = pd.read_csv(EVENT_WATCHER_EVENTS_PATH, keep_default_na=False)
+    for col in COLUMNS:
+        if col not in df.columns:
+            df[col] = ""
+    return df[COLUMNS]
 
 
 def get_state() -> dict:
@@ -365,25 +455,11 @@ def refresh() -> dict:
         scanned_rows = []
         existing_links = set(existing["Link"]) if not existing.empty else set()
         for entry in defence_entries:
-            title = entry.get("title", "")
-            link = entry.get("link", "")
-            symbols = _match_symbols(title)
-            keyword = _match_keyword(title)
-            matched = bool(symbols and keyword)
-            scanned_rows.append(_entry_to_scanned_row(entry, matched, symbols, keyword, "LIVE"))
-            if link in existing_links or not matched:
+            ev = _evaluate_entry(entry)
+            scanned_rows.append(_entry_to_scanned_row(entry, ev, "LIVE"))
+            if entry.get("link", "") in existing_links or not ev["matched"]:
                 continue
-            published = entry.get("published", "") or entry.get("updated", "")
-            new_rows.append(
-                {
-                    "Date": published or datetime.now(timezone.utc).isoformat(),
-                    "Title": title,
-                    "Link": link,
-                    "MatchedKeyword": keyword,
-                    "MatchedSymbols": ",".join(symbols),
-                    "Source": "LIVE",
-                }
-            )
+            new_rows.append(_evaluation_to_row(entry, ev, "LIVE", datetime.now(timezone.utc).isoformat()))
 
         _save_scanned(scanned_rows)
 
@@ -470,24 +546,11 @@ def fetch_historical(target_iso_date: str) -> dict:
         new_rows = []
         scanned_rows = []
         for entry in defence_entries:
-            title = entry.get("title", "")
-            link = entry.get("link", "")
-            symbols = _match_symbols(title)
-            keyword = _match_keyword(title)
-            matched = bool(symbols and keyword)
-            scanned_rows.append(_entry_to_scanned_row(entry, matched, symbols, keyword, "HISTORICAL"))
-            if link in existing_links or not matched:
+            ev = _evaluate_entry(entry)
+            scanned_rows.append(_entry_to_scanned_row(entry, ev, "HISTORICAL"))
+            if entry.get("link", "") in existing_links or not ev["matched"]:
                 continue
-            new_rows.append(
-                {
-                    "Date": entry.get("published", target.isoformat()),
-                    "Title": title,
-                    "Link": link,
-                    "MatchedKeyword": keyword,
-                    "MatchedSymbols": ",".join(symbols),
-                    "Source": "HISTORICAL",
-                }
-            )
+            new_rows.append(_evaluation_to_row(entry, ev, "HISTORICAL", target.isoformat()))
 
         _save_scanned(scanned_rows)
 

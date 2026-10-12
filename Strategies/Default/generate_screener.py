@@ -1,3 +1,5 @@
+import ast
+import json
 import os
 import re
 import sys
@@ -7,8 +9,24 @@ from dotenv import load_dotenv
 from google import genai
 # pyrefly: ignore [missing-import]
 from google.genai import types
+from pydantic import BaseModel
+
+import method_library
 
 load_dotenv()
+
+MODEL = 'gemini-3.1-flash-lite'
+RETRY_TEMPERATURE = 0.4
+
+
+class _NewMethod(BaseModel):
+    name: str
+    code: str
+
+
+class _StrategyOutput(BaseModel):
+    strategy_code: str
+    new_methods: list[_NewMethod]
 
 EVALUATE_STOCK_PROMPT_TEMPLATE = """
 You are an expert quantitative developer.
@@ -92,9 +110,55 @@ Requirements:
 - Never throw exceptions.
 - Return a valid dictionary even if a stock cannot be evaluated.
 - Use helper functions when needed.
-- Output ONLY valid Python code.
-- No markdown.
-- No explanations.
+
+Output format:
+
+Return a JSON object with exactly two fields:
+- "strategy_code": the complete Python module source as a string (valid
+  Python only - no markdown fences, no explanations).
+- "new_methods": a list (usually empty) of {{"name": str, "code": str}}
+  objects - new reusable methods for the Common Method Library, described
+  below.
+
+Common Method Library:
+
+Verified, reusable helper functions are importable in strategy_code with
+`from common_methods import <name>`. The current library:
+
+{common_methods_catalog}
+
+Library rules:
+- If a library method implements logic RULES needs, you MUST call it
+  instead of re-implementing that logic inline - even if RULES describes
+  the algorithm step by step, as long as the method's docstring matches
+  it. Pass the thresholds/parameters RULES specifies as arguments.
+- If RULES needs logic that is reusable across strategies (indicator math,
+  pivot/pattern/trendline detection, a generic filter parameterised by
+  thresholds) and no library method covers it, write it as a new method in
+  "new_methods" and import it in strategy_code via
+  `from common_methods import <name>`. Do not also define it inside
+  strategy_code.
+- strategy_code must define ONLY evaluate_stock (no other functions) and
+  must contain NO `for` or `while` loops. Every helper and every iterative
+  algorithm - walking bars, scanning pivots, fitting or validating lines,
+  counting streaks or touches - must be a library method: call an
+  existing one, or write a new one in "new_methods". Simple list/dict
+  comprehensions for glue (e.g. collecting pivot values) are fine. This is
+  checked automatically and answers that break it are rejected.
+- Strategy-specific glue stays in strategy_code: the concrete thresholds,
+  rule ordering, FailedRules wording, scoring weights and Details fields.
+  Never bake a strategy's specific thresholds into a new method - make
+  them parameters.
+- Each new method's "code" is a standalone module: its imports plus
+  exactly ONE top-level function whose name equals "name" (snake_case, not
+  already in the library). It must have a docstring describing args,
+  return value and edge-case behaviour, must never raise (return None /
+  False / empty on bad or insufficient data), and may import only numpy,
+  pandas, pandas_ta, scipy, math and common_methods. No file, network or
+  OS access.
+- Don't wrap a single pandas_ta call in a new method - call pandas_ta
+  directly (with ta_column for column selection). New methods are for
+  real algorithms.
 
 Critical implementation constraints:
 
@@ -123,10 +187,13 @@ Critical implementation constraints:
   you to compute (e.g. `dist_pct = 1.5  # placeholder`). If a rule requires
   nontrivial geometry or statistics - trendline/support-resistance fitting,
   regression, pivot/extrema detection, clustering, anything beyond a simple
-  arithmetic condition - implement it fully using numpy/scipy/pandas, using
-  the exact algorithm RULES specifies step by step if one is given. A
-  fake/approximated value that happens to make the code run is worse than
-  an honest failure.
+  arithmetic condition - implement it fully and faithfully to the exact
+  algorithm RULES specifies, but do so THROUGH THE COMMON METHOD LIBRARY:
+  call the existing library method whose docstring matches that algorithm
+  (passing RULES' parameters), or, if none matches, write the algorithm as
+  a new method in "new_methods". Never write it out inline in
+  strategy_code. A fake/approximated value that happens to make the code
+  run is worse than an honest failure.
 - When a rule asks you to count matches, touches, or occurrences against a
   SPECIFIC set of points (e.g. "count how many pivot lows lie near this
   line" or "count occurrences among the values listed in step N"), count
@@ -149,6 +216,53 @@ Critical implementation constraints:
 RULES:
 
 {rules_content}
+"""
+
+EXTRACT_METHODS_PROMPT_TEMPLATE = """
+You are an expert quantitative developer.
+
+Below is a WORKING Python module defining
+evaluate_stock(symbol, df, universe, sector_ranks, market_breadth).
+It is correct, but it breaks one structural rule:
+
+{error}
+
+Your only task is a pure refactor: move every helper function and every
+for/while loop out of the module into the Common Method Library, WITHOUT
+changing behaviour in any way. For every possible input, the refactored
+evaluate_stock must return exactly the same Passed, ClosenessScore,
+FailedRules (same wording) and Details as the original. This is verified
+automatically on real data, and any difference rejects your answer.
+
+How:
+- For each loop/helper, reuse a library method from the catalog below ONLY
+  if it computes exactly the same thing for every input. Otherwise write a
+  new method in "new_methods" that does exactly what the loop/helper does,
+  with the strategy's specific numbers passed in as parameters.
+- In strategy_code, replace the loop/helper with a call to that method,
+  imported via `from common_methods import <name>`. Keep everything else
+  in the module unchanged.
+- strategy_code must define only evaluate_stock and contain no for/while
+  loops. Simple comprehensions are fine.
+- Each new method's "code" is a standalone module: its imports plus exactly
+  ONE top-level function named "name" (snake_case, not already in the
+  library) with a docstring describing args, return value and edge cases.
+  It must never raise (return None / False / empty on bad input) and may
+  import only numpy, pandas, pandas_ta, scipy, math and common_methods.
+  Give it a general, descriptive name - it will be reused by other
+  strategies.
+
+Return a JSON object with exactly two fields: "strategy_code" (the full
+refactored module as a string, no markdown fences) and "new_methods" (a
+list of {{"name": str, "code": str}}).
+
+Common Method Library catalog:
+
+{common_methods_catalog}
+
+ORIGINAL MODULE:
+
+{strategy_code}
 """
 
 SELECT_STRATEGY_PROMPT_TEMPLATE = """
@@ -211,7 +325,7 @@ def _strip_code_fence(text):
 
 def _generate_from_prompt(client, prompt):
     response = client.models.generate_content(
-        model='gemini-3.1-flash-lite',
+        model=MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
             temperature=0.0,
@@ -220,14 +334,221 @@ def _generate_from_prompt(client, prompt):
     return _strip_code_fence(response.text)
 
 
+def _generate_strategy_output(client, prompt, temperature=0.0):
+    """Returns (strategy_code, new_methods) from Gemini's structured JSON."""
+    response = client.models.generate_content(
+        model=MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            temperature=temperature,
+            response_mime_type="application/json",
+            response_schema=_StrategyOutput,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        )
+    )
+    data = json.loads(response.text)
+    new_methods = [
+        {"name": m["name"].strip(), "code": _strip_code_fence(m["code"]) + "\n"}
+        for m in data.get("new_methods") or []
+    ]
+    return _strip_code_fence(data["strategy_code"]) + "\n", new_methods
+
+
+def _library_imports(code):
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return set()
+    return {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "common_methods"
+        for alias in node.names
+    }
+
+
+def _check_output(strategy_code, new_methods):
+    """Checks one Gemini answer. Returns (error, methods_ok, ran_cleanly):
+    - error: why the answer as a whole is rejected, or None if it passes.
+    - ran_cleanly: the strategy passed the smoke test, so any error is only
+      a library-structure rule (helper functions / loops), not broken code.
+    - methods_ok: True when the proposed new methods are safe to keep even
+      if the answer is rejected - every method passed its static checks AND
+      the strategy ran cleanly with them in the smoke test. Rejections for
+      strategy structure (helper functions, leftover loops) don't stop the
+      smoke test, so a good method isn't lost because of an unrelated loop."""
+    known = set(method_library.list_methods())
+    for m in new_methods:
+        error = method_library.validate_new_method(m["name"], m["code"], known)
+        if error:
+            return error, False, False
+        known.add(m["name"])
+    try:
+        tree = ast.parse(strategy_code)
+    except SyntaxError as e:
+        return f"strategy_code has a syntax error: {e}", False, False
+    missing = _library_imports(strategy_code) - known
+    if missing:
+        return f"strategy_code imports {sorted(missing)} from common_methods, but no such library or new method exists", False, False
+
+    smoke_error = method_library.smoke_test(strategy_code, new_methods)
+    ran_cleanly = smoke_error is None
+    methods_ok = bool(new_methods) and ran_cleanly
+
+    helpers = sorted(
+        n.name for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name != "evaluate_stock"
+    )
+    if helpers:
+        return (
+            f"strategy_code defines helper function(s) {helpers}. strategy_code may define only "
+            "evaluate_stock - move each helper into new_methods (one method per entry, with a docstring) "
+            "and import it with `from common_methods import ...`."
+        ), methods_ok, ran_cleanly
+    loops = sorted(n.lineno for n in ast.walk(tree) if isinstance(n, (ast.For, ast.AsyncFor, ast.While)))
+    if loops:
+        return (
+            f"strategy_code contains for/while loops (lines {loops}). Move each iterative algorithm "
+            "into a library method - reuse an existing one from the catalog or add it to new_methods."
+        ), methods_ok, ran_cleanly
+    return smoke_error, methods_ok, ran_cleanly
+
+
+def _extract_methods(client, strategy_code, error):
+    """Asks Gemini to move a working strategy's inline loops/helpers into
+    library methods. Accepted only if the refactor passes every check AND
+    returns identical results to the original on cached data. Returns
+    (refactored_code or None, saved method names, reason it failed)."""
+    prompt = EXTRACT_METHODS_PROMPT_TEMPLATE.format(
+        error=error,
+        common_methods_catalog=method_library.build_catalog(),
+        strategy_code=strategy_code,
+    )
+    try:
+        new_code, new_methods = _generate_strategy_output(client, prompt)
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        return None, [], f"invalid JSON: {e}"
+    check_error, _, _ = _check_output(new_code, new_methods)
+    if check_error:
+        return None, [], check_error
+    same_error = method_library.equivalence_test(strategy_code, new_code, new_methods)
+    if same_error:
+        return None, [], same_error
+    try:
+        method_library.save_methods(new_methods)
+    except RuntimeError as e:
+        return None, [], str(e)
+    return new_code, [m["name"] for m in new_methods], None
+
+
 def generate_evaluate_stock_code(client, rules_content):
     """Generates a module's worth of code implementing a single strategy's
     evaluate_stock(symbol, df, universe, sector_ranks, market_breadth) from
     its rules.md content. Used both for a normal single-strategy rules.md
     and, once per referenced file, when compiling a router (see
-    generate_router)."""
-    prompt = EVALUATE_STOCK_PROMPT_TEMPLATE.format(rules_content=rules_content)
-    return _generate_from_prompt(client, prompt)
+    generate_router).
+
+    The strategy may import from the Common Method Library (common_methods/).
+    A proposed method is added to the library once it passes its static
+    checks and the strategy runs cleanly with it. If the code works but
+    keeps a loop/helper inline, one focused extraction call moves it into
+    the library, accepted only if results are provably unchanged (see
+    _extract_methods). Broken answers get one corrective retry; methods
+    that never pass are inlined into the returned code instead, so the run
+    isn't blocked and the library stays clean."""
+    existing = set(method_library.list_methods())
+
+    def build_prompt():
+        return EVALUATE_STOCK_PROMPT_TEMPLATE.format(
+            rules_content=rules_content,
+            common_methods_catalog=method_library.build_catalog(),
+        )
+
+    base_prompt = build_prompt()
+    prompt = base_prompt
+    added = []
+    last = None
+    for attempt in range(2):
+        try:
+            # At temperature 0 a retry just repeats the rejected answer, so the
+            # corrective retry samples a little more freely.
+            temperature = 0.0 if attempt == 0 else RETRY_TEMPERATURE
+            strategy_code, new_methods = _generate_strategy_output(client, prompt, temperature)
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            error = f"response was not valid JSON in the required format: {e}"
+            print(f"Attempt {attempt + 1}: {error}")
+            prompt = base_prompt + f"\n\nYOUR PREVIOUS ANSWER WAS REJECTED: {error}\nReturn the same JSON format, corrected."
+            continue
+
+        error, methods_ok, ran_cleanly = _check_output(strategy_code, new_methods)
+        saved_now = []
+        if methods_ok:
+            try:
+                method_library.save_methods(new_methods)
+                saved_now = [m["name"] for m in new_methods]
+                added += saved_now
+            except RuntimeError as e:
+                error = error or str(e)
+
+        reused = sorted(_library_imports(strategy_code) & existing)
+        if error is None:
+            print(f"Common methods reused: {', '.join(reused) or 'none'}")
+            print(f"Common methods added: {', '.join(added) or 'none'}")
+            return strategy_code
+
+        if ran_cleanly and error.startswith("strategy_code "):
+            # The code works and only kept a loop/helper inline. A narrow
+            # "move this into the library" task succeeds far more often than
+            # regenerating the whole strategy, and is proven not to change
+            # behaviour before it's accepted.
+            print(f"Attempt {attempt + 1} works but {error[len('strategy_code '):].split('.')[0]} - extracting into the library...")
+            extracted, extracted_names, why = _extract_methods(client, strategy_code, error)
+            added += extracted_names
+            final_code = extracted or strategy_code
+            print(f"Common methods reused: {', '.join(sorted(_library_imports(final_code) & existing)) or 'none'}")
+            print(f"Common methods added: {', '.join(added) or 'none'}")
+            if extracted:
+                return extracted
+            print(f"Note: kept that logic inline - extraction didn't pass ({why}). The strategy passed its smoke test.")
+            return strategy_code
+
+        print(f"Attempt {attempt + 1} rejected: {error}")
+        if saved_now:
+            print(f"Kept anyway (passed their own checks): {', '.join(saved_now)}")
+            base_prompt = build_prompt()
+        unsaved = [m for m in new_methods if m["name"] not in saved_now]
+        # A retry can fix the rule it was told about but break the code, so
+        # never let an answer that failed the smoke test replace one that ran.
+        if last is None or ran_cleanly or not last[3]:
+            last = (strategy_code, unsaved, reused, ran_cleanly)
+        saved_note = (
+            f"\nThese methods from your previous answer passed and are now in the library "
+            f"(listed in the catalog above): {saved_now}. Import them with `from common_methods import ...` "
+            "- do not re-propose them in new_methods."
+        ) if saved_now else ""
+        prompt = base_prompt + (
+            f"\n\nYOUR PREVIOUS ANSWER WAS REJECTED BY AUTOMATED CHECKS:\n{error}{saved_note}\n"
+            "Return a corrected answer in the same JSON format."
+        )
+
+    if last is None:
+        raise RuntimeError("Gemini did not return valid JSON after 2 attempts.")
+
+    strategy_code, new_methods, reused, ran_cleanly = last
+    print(f"Common methods reused: {', '.join(reused) or 'none'}")
+    print(f"Common methods added: {', '.join(added) or 'none'}")
+    if not new_methods:
+        if ran_cleanly:
+            print("Note: some logic was kept inline instead of in the library (see above). The strategy passed its smoke test.")
+        else:
+            print("Warning: strategy failed its smoke test twice (see above) - writing it anyway, review it before trusting results.")
+        return strategy_code
+    print(f"Warning: {[m['name'] for m in new_methods]} didn't pass - inlining them into the strategy instead of the library.")
+    try:
+        return method_library.inline_methods(strategy_code, new_methods)
+    except SyntaxError:
+        print("Warning: proposed methods don't parse - writing the strategy without them, review it before trusting results.")
+        return strategy_code
 
 
 def _sanitize_key(name):

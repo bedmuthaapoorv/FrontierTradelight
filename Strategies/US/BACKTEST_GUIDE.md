@@ -1,7 +1,7 @@
 # How to Use the Backtest Tool
 
 The backtest simulates your current strategy (whatever `generated_rules.py`
-implements right now, derived from `rules.md`) against historical NSE data,
+implements right now, derived from `rules.md`) against historical US (S&P 500) data from Alpaca,
 so you can see how it would have actually performed instead of just trusting
 the logic on faith.
 
@@ -12,7 +12,7 @@ stock in the universe using only price data available up to that day (no
 look-ahead) — the exact same `evaluate_stock` function the live screener
 uses. Whenever a stock signals a pass:
 
-1. It opens a flat **₹100 trade** at the **next trading day's open**.
+1. It opens a flat **$100 trade** at the **next trading day's open**.
 2. It walks forward day by day, checking that day's **closing price only**
    (not intraday highs/lows) against your chosen exit strategy.
 3. It exits as soon as the exit condition fires, or — if it never fires
@@ -21,17 +21,17 @@ uses. Whenever a stock signals a pass:
 
 A stock can open **multiple simultaneous trades** if it signals again while
 an earlier trade on it is still open — each signal is treated as its own
-independent ₹100 bet when resolving *whether and when* it would have exited.
+independent $100 bet when resolving *whether and when* it would have exited.
 
 ### Portfolio simulation: what "total return" actually means
 
-The per-trade ₹100 numbers above answer "did this setup tend to work,"
+The per-trade $100 numbers above answer "did this setup tend to work,"
 but they don't by themselves answer "would this strategy have grown my
 money" — trades overlap in time, and a real account only has so much
 capital to go around. The **Portfolio result** section answers that
 question directly:
 
-- You set a **starting capital** (e.g. ₹100,000) and a **max concurrent
+- You set a **starting capital** (e.g. $100,000) and a **max concurrent
   positions** count (e.g. 10 — a fixed number of position "slots").
 - Every already-resolved trade above is replayed in chronological order.
   When a signal's entry date arrives and a slot is free, it gets funded at
@@ -44,8 +44,8 @@ question directly:
   entries.
 
 This is what "Final equity" and "Total return %" mean, and it's the
-number that actually corresponds to "if I ran this strategy with ₹X, would
-I have ₹1.1X after 3 years" — the individual ₹100-per-trade stats above do
+number that actually corresponds to "if I ran this strategy with $X, would
+I have $1.1X after 3 years" — the individual $100-per-trade stats above do
 not.
 
 **Total return is cumulative over the whole date range, not per-year.** A
@@ -104,13 +104,13 @@ dropdown in the Backtest tab.
 
 Before you click "Run backtest," the UI shows a pre-flight estimate: how
 many of the universe's stocks already have cached price history for your
-exact date range, and how many still need fetching from NSE. Fetching is
+exact date range, and how many still need fetching from Alpaca. Fetching is
 the slow part (network-bound); the day-by-day simulation itself is fast
 local computation once the data is in hand.
 
 - If everything is cached: **well under a minute**.
 - If stocks still need fetching: expect roughly **a few seconds per
-  uncached stock** (NSE requests, including retries on slow responses) —
+  uncached stock** (Alpaca requests, including retries on slow responses) —
   the estimate range widens for a fresh date range with nothing cached yet.
 - Changing only your exit strategy (editing `exit_rules.md` and
   regenerating) while keeping the same date range reuses the price-history
@@ -141,7 +141,7 @@ One row per simulated trade:
 | `ExitPrice` | The closing price on the exit day. |
 | `ExitReason` | Whatever tag your exit strategy uses (e.g. `SL`, `TP`, `TrailingATR`), or `RangeEnd` if nothing triggered before the date range ended (forced exit). |
 | `ClosenessScore` | The strategy's own ranking score (0-100) at signal time. |
-| `ProfitRs` | Profit in rupees on the flat ₹100 stake (equivalently, % return). |
+| `ProfitRs` | Profit in dollars on the flat $100 stake (equivalently, % return). The column keeps its India-side name because the shared frontend reads it. |
 | `Funded` | Whether the portfolio simulation actually had a free slot/capital to take this trade. |
 | `AllocatedCapital` | How much of the portfolio was put into this trade, if funded (blank/0 otherwise). |
 
@@ -172,13 +172,15 @@ that's worth knowing before you rely on it.
 
 ## Known limitations (read before trusting results)
 
-- **Survivorship bias:** the backtest uses *today's* Nifty 100 constituent
-  list applied retroactively. Stocks that were dropped from or added to the
-  index during your date range aren't accounted for, which can flatter
-  results slightly.
-- **Data lag:** like the live screener, this relies on NSE's end-of-day
-  archives via `jugaad-data` — no intraday fills, no slippage, no
-  brokerage/STT/transaction costs factored into `ProfitRs`.
+- **Survivorship bias:** the backtest universe is *today's* S&P 500
+  list, ranked by recent sector performance and applied retroactively.
+  Stocks that were dropped from or added to the index during your date
+  range aren't accounted for, which can flatter results. (The India side
+  uses point-in-time Nifty 500 membership; the US side doesn't have an
+  equivalent yet.)
+- **Data granularity:** daily bars from Alpaca's free Market Data API — no
+  intraday fills, no slippage, no commissions/fees factored into
+  `ProfitRs`.
 - **Small sample sizes:** short date ranges or a strategy with strict
   filters can produce very few trades per bucket — a bucket with 2 trades
   and a 100% win rate doesn't mean much statistically. Prefer longer date
