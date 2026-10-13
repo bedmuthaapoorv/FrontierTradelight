@@ -9,13 +9,6 @@ import pkgutil
 
 __all__ = []
 
-for _info in pkgutil.iter_modules(__path__):
-    if _info.name.startswith("_"):
-        continue
-    _module = importlib.import_module(f"{__name__}.{_info.name}")
-    globals()[_info.name] = getattr(_module, _info.name)
-    __all__.append(_info.name)
-
 
 def __getattr__(name):
     # Methods saved after this package was first imported (e.g. by a compile
@@ -29,5 +22,21 @@ def __getattr__(name):
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
     func = getattr(module, name)
     globals()[name] = func
-    __all__.append(name)
+    if name not in __all__:
+        __all__.append(name)
     return func
+
+
+# __getattr__ is defined before this loop so a method that does
+# `from common_methods import other_method` while the package is still
+# initialising gets the function, not the `other_method` submodule (the
+# import system's fallback), which would fail later with
+# "'module' object is not callable".
+for _info in pkgutil.iter_modules(__path__):
+    if _info.name.startswith("_"):
+        continue
+    _module = importlib.import_module(f"{__name__}.{_info.name}")
+    globals()[_info.name] = getattr(_module, _info.name)
+    if _info.name not in __all__:
+        __all__.append(_info.name)
+
