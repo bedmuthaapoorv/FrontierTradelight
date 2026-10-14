@@ -25,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from backup_utils import declared_strategy_name, group_backups, list_backups
 from constants import BACKUP_DIR, DATA_DIR, RULES_PATH, UNIVERSE_CACHE_PATH
+from fundamentals import call_evaluate_stock, snapshot as fundamentals_snapshot
 from nse_utils import (
     adjust_for_splits_and_bonuses,
     calculate_market_breadth,
@@ -238,7 +239,12 @@ def _run_one(key, symbol, df, universe, sector_ranks, breadth, emit=lambda pct, 
             emit(PCT_COMPILE, "Waiting to compile rules")
         module = _load_module(rules, on_compile=lambda: emit(PCT_COMPILE + 3, "Compiling rules with Gemini"))
         emit(PCT_EVALUATE, "Evaluating rules")
-        result = call_evaluate(module.evaluate_stock, symbol, df, universe, sector_ranks, breadth, momentum_ranks)
+        fundamentals = fundamentals_snapshot({symbol: float(df["close"].iloc[-1])}, datetime.date.today())
+        result = call_evaluate(
+            module.evaluate_stock, symbol, df, universe, sector_ranks, breadth,
+            momentum_ranks=momentum_ranks,
+            fundamentals=fundamentals,
+        )
     except Exception as e:
         return {"key": key, "status": "error", "error": str(e)}
 

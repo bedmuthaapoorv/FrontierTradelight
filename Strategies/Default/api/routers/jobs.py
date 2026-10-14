@@ -51,3 +51,8 @@ def generate_exit_strategy():
 @router.post("/check-exit-signals")
 def check_exit_signals():
     return StreamingResponse(_stream_script("sell_screener.py"), media_type="text/plain")
+
+
+@router.post("/fetch-fundamentals")
+def fetch_fundamentals():
+    return StreamingResponse(_stream_script("fetch_fundamentals.py"), media_type="text/plain")

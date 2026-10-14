@@ -11,3 +11,4 @@ feedparser
 requests
 python-multipart
 pypdf
+beautifulsoup4

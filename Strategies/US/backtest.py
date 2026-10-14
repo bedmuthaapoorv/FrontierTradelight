@@ -435,7 +435,10 @@ def simulate_portfolio(trades_df, initial_capital=100000.0, max_concurrent_posit
                 continue
             total_equity = cash + sum(open_positions.values())
             size = total_equity / max_concurrent_positions
-            if size <= cash:
+            # Filling the last free slot leaves cash ~= size, so float
+            # rounding can make size exceed cash by a hair; tolerate it.
+            if size <= cash + 1e-9 * total_equity:
+                size = min(size, cash)
                 open_positions[idx] = size
                 cash -= size
                 funded[idx] = True

@@ -115,11 +115,33 @@ def validate_new_method(name, code, existing=None):
     return None
 
 
+# Shared by both runners: appends the app dir LAST on sys.path (so the temp
+# copy of common_methods still wins) to reuse fundamentals.snapshot, and
+# passes real point-in-time fundamentals to strategies that accept them.
+_CALL_HELPER = r'''
+import inspect
+sys.path.append(sys.argv[4])
+try:
+    from fundamentals import snapshot as _fundamentals_snapshot
+except Exception:
+    _fundamentals_snapshot = None
+
+def call_strategy(fn, symbol, df):
+    args = (symbol, df, {symbol: {"Name": symbol, "Sector": "Test"}}, {symbol: 3}, 55.0)
+    if "fundamentals" not in inspect.signature(fn).parameters:
+        return fn(*args)
+    fundamentals = {}
+    if _fundamentals_snapshot is not None:
+        fundamentals = _fundamentals_snapshot({symbol: float(df["close"].iloc[-1])}, df.index[-1].date())
+    return fn(*args, fundamentals=fundamentals)
+'''
+
 _SMOKE_RUNNER = r'''
-import glob, inspect, json, sys, traceback
+import glob, inspect, json, os, sys, traceback
 import pandas as pd
 
 cache_dir, n_symbols, n_rows = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+''' + _CALL_HELPER + r'''
 errors = []
 
 def call(fn, symbol, *args):
@@ -139,7 +161,7 @@ except Exception:
 files = sorted(glob.glob(cache_dir + "/*.csv"))
 step = max(1, len(files) // n_symbols)
 for path in files[::step][:n_symbols]:
-    symbol = path.rsplit("/", 1)[-1].split("_")[0]
+    symbol = os.path.basename(path).split("_")[0]
     df = pd.read_csv(path, parse_dates=["date"], index_col="date").tail(n_rows)
     try:
         r = call(s.evaluate_stock, symbol, df, {symbol: {"Name": symbol, "Sector": "Test"}}, {symbol: 3}, 55.0)
@@ -178,7 +200,7 @@ def smoke_test(strategy_code, new_methods):
 
         try:
             proc = subprocess.run(
-                [sys.executable, runner, CACHE_DIR, str(SMOKE_SYMBOLS), str(SMOKE_ROWS)],
+                [sys.executable, runner, CACHE_DIR, str(SMOKE_SYMBOLS), str(SMOKE_ROWS), APP_DIR],
                 cwd=tmp, capture_output=True, text=True, timeout=SMOKE_TIMEOUT_SECONDS,
             )
         except subprocess.TimeoutExpired:
@@ -194,15 +216,19 @@ def smoke_test(strategy_code, new_methods):
 
 
 _EQUIV_RUNNER = r'''
-import glob, inspect, json, math, sys, traceback
+import glob, inspect, json, math, os, sys, traceback
 import pandas as pd
 
 cache_dir, n_symbols, n_rows = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 
-def call(fn, symbol, *args):
+def call(fn, symbol, *args, **kwargs):
     params = inspect.signature(fn).parameters
-    if "momentum_ranks" in params or any(p.kind == p.VAR_KEYWORD for p in params.values()):
-        return fn(symbol, *args, momentum_ranks={symbol: 3.0})
+    if "momentum_ranks" in params or "fundamentals" in params or any(p.kind == p.VAR_KEYWORD for p in params.values()):
+        if "momentum_ranks" in params or any(p.kind == p.VAR_KEYWORD for p in params.values()):
+            kwargs["momentum_ranks"] = {symbol: 3.0}
+        if "fundamentals" in params:
+            kwargs["fundamentals"] = {symbol: {"latest_fy": "2024-03-31"}}
+        return fn(symbol, *args, **kwargs)
     return fn(symbol, *args)
 try:
     import strategy_a as a, strategy_b as b
@@ -219,11 +245,10 @@ files = sorted(glob.glob(cache_dir + "/*.csv"))
 step = max(1, len(files) // n_symbols)
 diffs, compared = [], 0
 for path in files[::step][:n_symbols]:
-    symbol = path.rsplit("/", 1)[-1].split("_")[0]
+    symbol = os.path.basename(path).split("_")[0]
     full = pd.read_csv(path, parse_dates=["date"], index_col="date")
     for end in range(len(full), max(n_rows, len(full) - 1500), -60):
         df = full.iloc[:end].tail(n_rows)
-        args = (symbol, df, {symbol: {"Name": symbol, "Sector": "Test"}}, {symbol: 3}, 55.0)
         try:
             ka, kb = key(call(a.evaluate_stock, *args)), key(call(b.evaluate_stock, *args))
         except Exception as e:
@@ -259,7 +284,7 @@ def equivalence_test(code_before, code_after, new_methods):
             f.write(_EQUIV_RUNNER)
         try:
             proc = subprocess.run(
-                [sys.executable, runner, CACHE_DIR, str(SMOKE_SYMBOLS), str(SMOKE_ROWS)],
+                [sys.executable, runner, CACHE_DIR, str(SMOKE_SYMBOLS), str(SMOKE_ROWS), APP_DIR],
                 cwd=tmp, capture_output=True, text=True, timeout=SMOKE_TIMEOUT_SECONDS * 2,
             )
         except subprocess.TimeoutExpired:

@@ -83,3 +83,14 @@ EVENT_WATCHER_SCANNED_PATH = os.path.join(EVENT_WATCHER_DIR, "last_scanned.json"
 # informational only, no Signal/Ceiling scoring).
 EVENT_WATCHER_INVESTOR_MEETS_PATH = os.path.join(EVENT_WATCHER_DIR, "meesho_investor_meets.csv")
 EVENT_WATCHER_INVESTOR_MEETS_META_PATH = os.path.join(EVENT_WATCHER_DIR, "meesho_investor_meets_meta.json")
+
+# Fundamentals - annual P&L / balance-sheet history for every stock ever in
+# the Nifty 500, scraped from Screener.in public pages by
+# fetch_fundamentals.py and read point-in-time by fundamentals.py. Screener.in
+# permits personal, non-commercial use only, so this folder stays gitignored
+# (no exception line) and must never feed anything published.
+FUNDAMENTALS_DIR = os.path.join(DATA_DIR, "fundamentals")
+FUNDAMENTALS_RAW_DIR = os.path.join(FUNDAMENTALS_DIR, "raw")
+os.makedirs(FUNDAMENTALS_RAW_DIR, exist_ok=True)
+FUNDAMENTALS_ANNUAL_PATH = os.path.join(FUNDAMENTALS_DIR, "annual.csv")
+FUNDAMENTALS_LOG_PATH = os.path.join(FUNDAMENTALS_DIR, "fetch_log.csv")

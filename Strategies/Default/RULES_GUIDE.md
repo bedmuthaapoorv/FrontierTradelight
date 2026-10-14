@@ -40,17 +40,35 @@ fetches per stock. Don't invent a metric it has no way to calculate. You have:
   that day. Use it for rules like "bottom 5% of momentum" (≤ 5) or "top 10%"
   (≥ 90). It's empty for stocks with less than ~253 days of history.
 - **Company/sector metadata** — name, sector, current price.
+- **Annual fundamentals** (`fundamentals`) — from Screener.in, cached by
+  `fetch_fundamentals.py` (run it first; refresh quarterly). Per stock, as
+  publicly known on the evaluated day (a fiscal year only counts 60 days
+  after it ends, the SEBI results deadline):
+  `positive_eps_years`, `eps`, `eps_cagr_3y`, `sales_cagr_3y`, `roe`,
+  `de` (debt/equity, None for banks/financials), `is_financial`, `pe`
+  (today's close / latest EPS) and `peg` (`pe / (eps_cagr_3y × 100)`).
+  Growth rates and ROE are fractions (0.15 = 15%). Any value can be missing
+  — say what a rule does then (usually: fail). Figures are annual only and
+  restated, not as first reported.
 
 These are passed into the generated function as
 `evaluate_stock(symbol, df, universe, sector_ranks, market_breadth, momentum_ranks=None)`
-— if your rules reference sector rank, market breadth or momentum rank, use
+or `evaluate_stock(symbol, df, universe, sector_ranks, market_breadth, fundamentals=None)`
+— if your rules reference sector rank, market breadth, momentum rank or fundamentals, use
 these parameters directly rather than trying to compute them from `df` (a
 single stock's own OHLCV can't tell you about its sector's return, the whole
-market's breadth, or how it ranks against other stocks). Strategies compiled
-before `momentum_ranks` existed keep working unchanged.
+market's breadth, or its earnings). Momentum ranks are cross-sectional; fundamentals
+are point-in-time company data.
+
+Fundamentals change about once a year, so a fundamentals-only rule passes
+on every trading day and the backtester (which opens a trade every day a
+stock passes) would keep re-entering. For slow fundamental strategies, add
+an entry-day rule such as "the signal day is the first trading day on or
+after 15 June or 15 December" so each stock can signal only on a
+rebalance day, and pair it with an exit that holds until the next one.
 
 If a rule needs something outside this (e.g. options data, news sentiment,
-fundamentals like P/E), it won't be computable — the generator will either
+quarterly results), it won't be computable — the generator will either
 skip it or hallucinate a stand-in, which defeats the point.
 
 ## Required structure
@@ -233,9 +251,10 @@ Use Breakout when MarketBreadth is above 60, otherwise Trendline.
 - **Change one section at a time.** After editing `rules.md`, re-run
   `generate_screener.py` and skim the diff in `generated_rules.py` before
   trusting it — treat the AI output as a draft, not gospel.
-- **Keep it to what's computable from price + volume + sector data.**
-  Anything else (fundamentals, news, options flow) isn't available to the
-  screener and will produce unreliable generated code.
+- **Keep it to what's computable from price, volume, sector and the annual
+  fundamentals above.** Anything else (quarterly results, news, options
+  flow) isn't available to the screener and will produce unreliable
+  generated code.
 
 ## Full example
 

@@ -42,6 +42,7 @@ warnings.filterwarnings("ignore")
 
 import pandas as pd
 
+from fundamentals import call_evaluate_stock, snapshot as fundamentals_snapshot
 from historical_universe import members_as_of, symbols_between, universe_info
 from nse_utils import (
     adjust_for_splits_and_bonuses,
@@ -419,12 +420,17 @@ def run_backtest(start_date, end_date, progress_callback=None):
         sector_ranks_today = calculate_sector_strength(snapshot, universe)
         market_breadth_today = calculate_market_breadth(snapshot)
         momentum_ranks_today = calculate_momentum_ranks(snapshot)
+        fundamentals_today = fundamentals_snapshot(
+            {symbol: float(df_slice["close"].iloc[-1]) for symbol, df_slice in snapshot.items()}, day
+        )
 
         for symbol, df_slice in snapshot.items():
             try:
                 result = call_evaluate(
                     generated_rules.evaluate_stock, symbol, df_slice, universe,
-                    sector_ranks_today, market_breadth_today, momentum_ranks_today,
+                    sector_ranks_today, market_breadth_today,
+                    momentum_ranks=momentum_ranks_today,
+                    fundamentals=fundamentals_today,
                 )
             except Exception:
                 continue
@@ -527,7 +533,10 @@ def simulate_portfolio(trades_df, initial_capital=100000.0, max_concurrent_posit
                 continue
             total_equity = cash + sum(open_positions.values())
             size = total_equity / max_concurrent_positions
-            if size <= cash:
+            # Filling the last free slot leaves cash ~= size, so float
+            # rounding can make size exceed cash by a hair; tolerate it.
+            if size <= cash + 1e-9 * total_equity:
+                size = min(size, cash)
                 open_positions[idx] = size
                 cash -= size
                 funded[idx] = True

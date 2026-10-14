@@ -39,6 +39,8 @@ The generated file must contain:
 2. A function:
 
 def evaluate_stock(symbol, df, universe, sector_ranks, market_breadth, momentum_ranks=None):
+# or:
+def evaluate_stock(symbol, df, universe, sector_ranks, market_breadth, fundamentals=None):
 
 Where market_breadth (float, 0-100) is the percentage of the entire stock
 universe currently trading above its own 50-day moving average, computed
@@ -49,15 +51,38 @@ breadth filter, implement it using this parameter directly - do not attempt
 to compute breadth yourself from `df` (a single stock's own data cannot
 tell you about the whole market).
 
-momentum_ranks maps symbol -> this stock's cross-sectional "12-1"
+The generated signature is either
+`evaluate_stock(symbol, df, universe, sector_ranks, market_breadth, momentum_ranks=None)`
+or
+`evaluate_stock(symbol, df, universe, sector_ranks, market_breadth, fundamentals=None)`.
+`momentum_ranks` maps symbol -> this stock's cross-sectional "12-1"
 momentum percentile (float in (0, 100], 100 = strongest, near 0 =
 weakest): its return from 252 trading days ago to 21 trading days ago,
 ranked against every other stock in the universe that day. Read it with
-`(momentum_ranks or {{}}).get(symbol)`; it can be None (the dict itself, or
+`(momentum_ranks or {}).get(symbol)`; it can be None (the dict itself, or
 a symbol with too little history) - treat None as failing any rule that
 uses it. If RULES refer to a momentum rank or percentile across stocks,
 use this parameter - never try to compute a cross-stock ranking from `df`,
 which only holds this one stock.
+
+`fundamentals` maps symbol -> dict of annual company fundamentals as they
+were publicly known on the day of the last row of `df` (point-in-time; a
+fiscal year only counts once its results were due). Read this stock's entry
+with `(fundamentals or {}).get(symbol)`. The entry is missing (None) when
+no data exists - then every fundamentals rule FAILS for this stock. Keys
+(any value may be None, which also means the rule fails):
+  - "latest_fy": str, ISO date of the latest public fiscal year end
+  - "positive_eps_years": int, consecutive fiscal years with EPS > 0,
+    counting back from the latest one
+  - "eps": float, latest full-year EPS in Rs
+  - "eps_cagr_3y": float, 3-year EPS CAGR as a fraction (0.15 = 15%)
+  - "sales_cagr_3y": float, 3-year sales CAGR as a fraction
+  - "roe": float, return on equity as a fraction
+  - "de": float, debt/equity; None for banks and other financials
+  - "is_financial": bool, True for banks / NBFCs / insurers
+  - "pe": float, today's close / latest EPS (None if EPS <= 0)
+  - "peg": float, pe / (eps_cagr_3y * 100) (None if growth <= 0)
+Never compute fundamentals yourself from `df` - only `fundamentals` has them.
 
 3. The function must return:
 
@@ -233,6 +258,8 @@ You are an expert quantitative developer.
 
 Below is a WORKING Python module defining
 evaluate_stock(symbol, df, universe, sector_ranks, market_breadth[, momentum_ranks]).
+evaluate_stock(symbol, df, universe, sector_ranks, market_breadth, fundamentals=None).
+Keep that exact signature.
 It is correct, but it breaks one structural rule:
 
 {error}
@@ -377,6 +404,31 @@ def _library_imports(code):
     }
 
 
+EVALUATE_STOCK_ARGS = ["symbol", "df", "universe", "sector_ranks", "market_breadth", "fundamentals"]
+
+
+def _check_signature(tree):
+    """Rejects an evaluate_stock that doesn't take exactly the six expected
+    parameters with fundamentals=None - callers pass fundamentals by keyword,
+    so a missing or misnamed parameter would otherwise only fail at run time."""
+    funcs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "evaluate_stock"]
+    if not funcs:
+        return "strategy_code does not define a top-level evaluate_stock function"
+    args = funcs[0].args
+    names = [a.arg for a in args.args]
+    defaults_ok = (
+        len(args.defaults) == 1
+        and isinstance(args.defaults[0], ast.Constant)
+        and args.defaults[0].value is None
+    )
+    if names != EVALUATE_STOCK_ARGS or not defaults_ok or args.vararg or args.kwarg or args.kwonlyargs:
+        return (
+            "evaluate_stock must have exactly this signature: "
+            "def evaluate_stock(symbol, df, universe, sector_ranks, market_breadth, fundamentals=None)"
+        )
+    return None
+
+
 def _check_output(strategy_code, new_methods):
     """Checks one Gemini answer. Returns (error, methods_ok, ran_cleanly):
     - error: why the answer as a whole is rejected, or None if it passes.
@@ -400,6 +452,9 @@ def _check_output(strategy_code, new_methods):
     missing = _library_imports(strategy_code) - known
     if missing:
         return f"strategy_code imports {sorted(missing)} from common_methods, but no such library or new method exists", False, False
+    signature_error = _check_signature(tree)
+    if signature_error:
+        return signature_error, False, False
 
     smoke_error = method_library.smoke_test(strategy_code, new_methods)
     ran_cleanly = smoke_error is None
@@ -654,6 +709,7 @@ def generate_router(client, rules_content):
 and "Routing Rules" sections by generate_screener.py. Do not edit by hand -
 edit rules.md and regenerate instead."""
 
+import inspect
 from strategy_runtime import call_evaluate as _call_evaluate
 
 {import_lines}
@@ -665,6 +721,8 @@ _FALLBACK_KEY = "{fallback_key}"
 
 
 def evaluate_stock(symbol, df, universe, sector_ranks, market_breadth, momentum_ranks=None):
+    # or:
+    # def evaluate_stock(symbol, df, universe, sector_ranks, market_breadth, fundamentals=None):
     try:
         active_key = select_strategy(market_breadth)
         if active_key not in _STRATEGIES:
@@ -672,9 +730,13 @@ def evaluate_stock(symbol, df, universe, sector_ranks, market_breadth, momentum_
     except Exception:
         active_key = _FALLBACK_KEY
 
-    result = _call_evaluate(
-        _STRATEGIES[active_key].evaluate_stock, symbol, df, universe, sector_ranks, market_breadth, momentum_ranks,
-    )
+    sub = _STRATEGIES[active_key].evaluate_stock
+    if "fundamentals" in inspect.signature(sub).parameters:
+        result = sub(symbol, df, universe, sector_ranks, market_breadth, fundamentals=fundamentals)
+    elif "momentum_ranks" in inspect.signature(sub).parameters:
+        result = sub(symbol, df, universe, sector_ranks, market_breadth, momentum_ranks=momentum_ranks)
+    else:
+        result = sub(symbol, df, universe, sector_ranks, market_breadth)
     result.setdefault("Details", {{}})["Active Strategy"] = active_key
     return result
 '''
