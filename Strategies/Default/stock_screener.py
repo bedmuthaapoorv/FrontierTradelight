@@ -13,6 +13,7 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 warnings.filterwarnings('ignore')
 
+from fundamentals import call_evaluate_stock, snapshot as fundamentals_snapshot
 from universe_fetcher import get_top_stocks_by_sector
 from nse_utils import fetch_stock_history, calculate_sector_strength, calculate_market_breadth
 from constants import REPORT_PATH
@@ -108,17 +109,26 @@ def analyze_stocks(data, universe, sector_ranks, market_breadth):
 
     import generated_rules
 
+    # Live prices are unadjusted, which matches Screener's EPS on today's
+    # share count, so today's close gives a consistent P/E.
+    fundamentals = fundamentals_snapshot(
+        {symbol: float(df["close"].iloc[-1]) for symbol, df in data.items() if len(df)},
+        datetime.date.today(),
+    )
+
     for symbol, df in data.items():
         if len(df) < 50:
             continue
 
         try:
-            result = generated_rules.evaluate_stock(
+            result = call_evaluate_stock(
+                generated_rules.evaluate_stock,
                 symbol,
                 df,
                 universe,
                 sector_ranks,
-                market_breadth
+                market_breadth,
+                fundamentals,
             )
 
             if result:
