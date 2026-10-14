@@ -51,6 +51,40 @@ def fetch_stock_history(symbol, from_date, to_date, series="EQ", retries=3, back
     raise last_error
 
 
+def adjust_for_splits_and_bonuses(df, threshold=0.65):
+    """Detect and back-adjust for unadjusted stock splits / bonus issues.
+
+    The NSE history this pipeline fetches is NOT split/bonus-adjusted - a
+    split shows up as a genuine ~50-90% overnight drop in the raw close
+    price with no corresponding move in the stock's actual value. Left as
+    -is, this reads as a catastrophic single-day crash to every rule and
+    exit condition (RSI, ATR, trailing stops, 12-month momentum),
+    fabricating moves that never happened to a real position.
+
+    Detects a day-over-day close ratio outside [threshold, 1/threshold]
+    (i.e. more than a ~35% move in either direction - far past any
+    realistic single-day move for a Nifty-adjacent large-cap without a
+    circuit-breaker halt) and back-adjusts every prior row's OHLC by that
+    ratio (and volume inversely), the same technique used to build a
+    standard split-adjusted price series. Expects lowercase OHLCV columns,
+    oldest row first.
+    """
+    close = df["close"].values
+    ratios = close[1:] / close[:-1]
+    split_idxs = [i + 1 for i, r in enumerate(ratios) if r < threshold or r > 1 / threshold]
+    if not split_idxs:
+        return df
+
+    df = df.copy()
+    df["volume"] = df["volume"].astype(float)
+    for idx in split_idxs:
+        factor = df["close"].iloc[idx] / df["close"].iloc[idx - 1]
+        price_cols = ["open", "high", "low", "close"]
+        df.iloc[:idx, df.columns.get_indexer(price_cols)] *= factor
+        df.iloc[:idx, df.columns.get_loc("volume")] /= factor
+    return df
+
+
 def calculate_sector_strength(data, universe):
     """Rank sectors by average 30-day return and map each symbol to its sector's rank.
 
@@ -115,3 +149,31 @@ def calculate_market_breadth(data, ma_period=50):
         return 50.0
 
     return (above / total) * 100
+
+
+def calculate_momentum_ranks(data, lookback=252, skip=21):
+    """Cross-sectional "12-1" momentum percentile for every symbol in `data`:
+    each stock's return from `lookback` bars ago to `skip` bars ago (the
+    most recent month is skipped, since very recent winners/losers tend to
+    briefly reverse), ranked against all other stocks in `data`.
+
+    Returns symbol -> percentile in (0, 100], where 100 = strongest momentum
+    and values near 0 = weakest. Symbols with fewer than lookback + 1 rows
+    get None. Like the functions above, it only uses rows already present
+    in each DataFrame, so a date-truncated slice keeps it look-ahead free.
+    """
+    returns = {}
+    for symbol, df in data.items():
+        if df is None or len(df) < lookback + 1:
+            continue
+        close = df["close"]
+        start = close.iloc[-1 - lookback]
+        end = close.iloc[-1 - skip]
+        if pd.notna(start) and pd.notna(end) and start > 0:
+            returns[symbol] = end / start - 1
+
+    ranks = {symbol: None for symbol in data}
+    if returns:
+        pct = pd.Series(returns).rank(pct=True) * 100
+        ranks.update({symbol: float(value) for symbol, value in pct.items()})
+    return ranks

@@ -38,7 +38,7 @@ The generated file must contain:
 1. All necessary imports.
 2. A function:
 
-def evaluate_stock(symbol, df, universe, sector_ranks, market_breadth):
+def evaluate_stock(symbol, df, universe, sector_ranks, market_breadth, momentum_ranks=None):
 
 Where market_breadth (float, 0-100) is the percentage of the entire stock
 universe currently trading above its own 50-day moving average, computed
@@ -48,6 +48,16 @@ no external index data is available. If the RULES below define a market
 breadth filter, implement it using this parameter directly - do not attempt
 to compute breadth yourself from `df` (a single stock's own data cannot
 tell you about the whole market).
+
+momentum_ranks maps symbol -> this stock's cross-sectional "12-1"
+momentum percentile (float in (0, 100], 100 = strongest, near 0 =
+weakest): its return from 252 trading days ago to 21 trading days ago,
+ranked against every other stock in the universe that day. Read it with
+`(momentum_ranks or {{}}).get(symbol)`; it can be None (the dict itself, or
+a symbol with too little history) - treat None as failing any rule that
+uses it. If RULES refer to a momentum rank or percentile across stocks,
+use this parameter - never try to compute a cross-stock ranking from `df`,
+which only holds this one stock.
 
 3. The function must return:
 
@@ -222,7 +232,7 @@ EXTRACT_METHODS_PROMPT_TEMPLATE = """
 You are an expert quantitative developer.
 
 Below is a WORKING Python module defining
-evaluate_stock(symbol, df, universe, sector_ranks, market_breadth).
+evaluate_stock(symbol, df, universe, sector_ranks, market_breadth[, momentum_ranks]).
 It is correct, but it breaks one structural rule:
 
 {error}
@@ -443,7 +453,7 @@ def _extract_methods(client, strategy_code, error):
 
 def generate_evaluate_stock_code(client, rules_content):
     """Generates a module's worth of code implementing a single strategy's
-    evaluate_stock(symbol, df, universe, sector_ranks, market_breadth) from
+    evaluate_stock(symbol, df, universe, sector_ranks, market_breadth, momentum_ranks=None) from
     its rules.md content. Used both for a normal single-strategy rules.md
     and, once per referenced file, when compiling a router (see
     generate_router).
@@ -644,6 +654,8 @@ def generate_router(client, rules_content):
 and "Routing Rules" sections by generate_screener.py. Do not edit by hand -
 edit rules.md and regenerate instead."""
 
+from strategy_runtime import call_evaluate as _call_evaluate
+
 {import_lines}
 
 {select_strategy_code}
@@ -652,7 +664,7 @@ _STRATEGIES = {{{dict_entries}}}
 _FALLBACK_KEY = "{fallback_key}"
 
 
-def evaluate_stock(symbol, df, universe, sector_ranks, market_breadth):
+def evaluate_stock(symbol, df, universe, sector_ranks, market_breadth, momentum_ranks=None):
     try:
         active_key = select_strategy(market_breadth)
         if active_key not in _STRATEGIES:
@@ -660,7 +672,9 @@ def evaluate_stock(symbol, df, universe, sector_ranks, market_breadth):
     except Exception:
         active_key = _FALLBACK_KEY
 
-    result = _STRATEGIES[active_key].evaluate_stock(symbol, df, universe, sector_ranks, market_breadth)
+    result = _call_evaluate(
+        _STRATEGIES[active_key].evaluate_stock, symbol, df, universe, sector_ranks, market_breadth, momentum_ranks,
+    )
     result.setdefault("Details", {{}})["Active Strategy"] = active_key
     return result
 '''

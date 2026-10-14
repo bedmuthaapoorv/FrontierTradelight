@@ -97,6 +97,14 @@ Critical implementation constraints:
   triggers"), IGNORE it - the caller always handles that itself. This
   function must only implement the specific exit conditions, and return
   None when none of them fire.
+- The position may be SHORT if EXIT_RULES say so: then a stop-loss sits
+  ABOVE entry_price (triggered by price rising) and a profit target BELOW
+  it. Implement exactly the direction EXIT_RULES describe. Never compute
+  profit/loss yourself - only decide when and at what price to exit; the
+  caller computes P&L for the right direction.
+- For an INTRADAY strategy, future_df contains only the entry day (one
+  row). Returning None then means "no stop/target hit today", and the
+  caller squares the position off at that day's close.
 
 EXIT_RULES:
 

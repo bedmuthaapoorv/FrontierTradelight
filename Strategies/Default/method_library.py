@@ -116,11 +116,20 @@ def validate_new_method(name, code, existing=None):
 
 
 _SMOKE_RUNNER = r'''
-import glob, json, sys, traceback
+import glob, inspect, json, sys, traceback
 import pandas as pd
 
 cache_dir, n_symbols, n_rows = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 errors = []
+
+def call(fn, symbol, *args):
+    # Mirrors strategy_runtime.call_evaluate (this runner executes outside
+    # Default/, so it can't import it). A low synthetic momentum rank also
+    # exercises short-side rules, not just their rejection path.
+    params = inspect.signature(fn).parameters
+    if "momentum_ranks" in params or any(p.kind == p.VAR_KEYWORD for p in params.values()):
+        return fn(symbol, *args, momentum_ranks={symbol: 3.0})
+    return fn(symbol, *args)
 try:
     import strategy_under_test as s
 except Exception:
@@ -133,7 +142,7 @@ for path in files[::step][:n_symbols]:
     symbol = path.rsplit("/", 1)[-1].split("_")[0]
     df = pd.read_csv(path, parse_dates=["date"], index_col="date").tail(n_rows)
     try:
-        r = s.evaluate_stock(symbol, df, {symbol: {"Name": symbol, "Sector": "Test"}}, {symbol: 3}, 55.0)
+        r = call(s.evaluate_stock, symbol, df, {symbol: {"Name": symbol, "Sector": "Test"}}, {symbol: 3}, 55.0)
     except Exception as e:
         errors.append(f"{symbol}: raised {type(e).__name__}: {e}")
         continue
@@ -185,10 +194,16 @@ def smoke_test(strategy_code, new_methods):
 
 
 _EQUIV_RUNNER = r'''
-import glob, json, math, sys, traceback
+import glob, inspect, json, math, sys, traceback
 import pandas as pd
 
 cache_dir, n_symbols, n_rows = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+
+def call(fn, symbol, *args):
+    params = inspect.signature(fn).parameters
+    if "momentum_ranks" in params or any(p.kind == p.VAR_KEYWORD for p in params.values()):
+        return fn(symbol, *args, momentum_ranks={symbol: 3.0})
+    return fn(symbol, *args)
 try:
     import strategy_a as a, strategy_b as b
 except Exception:
@@ -210,7 +225,7 @@ for path in files[::step][:n_symbols]:
         df = full.iloc[:end].tail(n_rows)
         args = (symbol, df, {symbol: {"Name": symbol, "Sector": "Test"}}, {symbol: 3}, 55.0)
         try:
-            ka, kb = key(a.evaluate_stock(*args)), key(b.evaluate_stock(*args))
+            ka, kb = key(call(a.evaluate_stock, *args)), key(call(b.evaluate_stock, *args))
         except Exception as e:
             diffs.append(f"{symbol}@{df.index[-1].date()}: raised {type(e).__name__}: {e}")
             continue

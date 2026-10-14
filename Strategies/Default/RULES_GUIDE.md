@@ -34,14 +34,20 @@ fetches per stock. Don't invent a metric it has no way to calculate. You have:
   It's a stand-in for a Nifty benchmark regime filter (no external index
   data is available) — useful for a rule like "pause entries when the
   broader market itself is weak, even if this stock's setup looks fine."
+- **Momentum rank** — each stock's cross-sectional "12-1" momentum
+  percentile (0-100, 100 = strongest): its return from 252 trading days ago
+  to 21 trading days ago, ranked against every other stock in the universe
+  that day. Use it for rules like "bottom 5% of momentum" (≤ 5) or "top 10%"
+  (≥ 90). It's empty for stocks with less than ~253 days of history.
 - **Company/sector metadata** — name, sector, current price.
 
 These are passed into the generated function as
-`evaluate_stock(symbol, df, universe, sector_ranks, market_breadth)` — if
-your rules reference sector rank or market breadth, use these parameters
-directly rather than trying to compute them from `df` (a single stock's
-own OHLCV can't tell you about its sector's return or the whole market's
-breadth).
+`evaluate_stock(symbol, df, universe, sector_ranks, market_breadth, momentum_ranks=None)`
+— if your rules reference sector rank, market breadth or momentum rank, use
+these parameters directly rather than trying to compute them from `df` (a
+single stock's own OHLCV can't tell you about its sector's return, the whole
+market's breadth, or how it ranks against other stocks). Strategies compiled
+before `momentum_ranks` existed keep working unchanged.
 
 If a rule needs something outside this (e.g. options data, news sentiment,
 fundamentals like P/E), it won't be computable — the generator will either
@@ -67,6 +73,20 @@ Market: India (NSE/BSE)
 Timeframe: Daily
 Holding Period: Swing Trade (1-30 Days)
 ```
+
+Two optional lines **do** change how the backtester treats the strategy:
+
+- `Direction: Short` — a passing stock is a **short** signal: the backtest
+  profits when price falls (P&L sign flipped), and Strategy Compare shows
+  "Short signal". Default (no line): `Long`.
+- `Holding: Intraday` — every trade is opened at the next day's open and
+  closed the **same day** (MIS): the exit strategy only sees that one day,
+  and anything still open is squared off at its close (`SquareOff`).
+  Default (no line): a normal swing trade held until the exit strategy
+  fires.
+
+See `Rules_backup/momentum_loser_intraday_short_v1_rules_*.md` for a
+complete short + intraday example.
 
 ### 2. Mandatory Filters
 

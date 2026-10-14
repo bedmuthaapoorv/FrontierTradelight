@@ -519,10 +519,11 @@ export interface MultiStrategyOption {
   unsupported_reason: string | null
 }
 
-export type StrategyVerdict = 'buy' | 'near' | 'none' | 'error'
+export type StrategyVerdict = 'buy' | 'short' | 'near' | 'none' | 'error'
 
 export interface StrategyRunResult {
   key: string
+  direction?: 'Long' | 'Short'
   status: StrategyVerdict
   error?: string
   closeness_score: number | null

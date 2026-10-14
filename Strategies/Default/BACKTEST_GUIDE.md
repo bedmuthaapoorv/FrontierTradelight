@@ -97,6 +97,17 @@ range, tagged `RangeEnd`. This guarantee holds no matter what you write in
 `exit_rules.md`, so a regenerated exit strategy can never accidentally leave
 a trade open forever.
 
+**Short and intraday strategies.** If `rules.md` declares `Direction: Short`
+and/or `Holding: Intraday` (see RULES_GUIDE.md), the backtester flips the
+P&L sign for shorts and, for intraday, hands the exit strategy only the
+entry day and squares off anything still open at that day's close, tagged
+`SquareOff` instead of `RangeEnd`. Write the exit rules for the actual
+direction — e.g. a short's stop-loss sits **above** entry. With daily bars
+the order of a day's high and low is unknown, so a stop touched by the
+day's high/low should be treated as hit (pessimistic); see
+`ExitRules_backup/mis_short_stop_and_square_off_v1_exit_rules_*.md`.
+Results are gross: no brokerage, STT or slippage is deducted.
+
 `exit_rules.md` gets the same backup treatment as `rules.md`: saving a
 changed version automatically backs up the previous one to
 `ExitRules_backup/`, and you can restore any previous exit strategy from a
@@ -136,12 +147,13 @@ One row per simulated trade:
 | Column | Meaning |
 |---|---|
 | `Symbol` | The stock traded. |
+| `Direction` | `Long` or `Short` (from `rules.md`'s `Direction:` line). |
 | `SignalDate` | The day the strategy's conditions passed. |
 | `EntryDate` | The next trading day — when the trade actually opens. |
 | `EntryPrice` | That day's opening price. |
 | `ExitDate` | The day the trade closed out. |
 | `ExitPrice` | The closing price on the exit day. |
-| `ExitReason` | Whatever tag your exit strategy uses (e.g. `SL`, `TP`, `TrailingATR`), or `RangeEnd` if nothing triggered before the date range ended (forced exit). |
+| `ExitReason` | Whatever tag your exit strategy uses (e.g. `SL`, `TP`, `TrailingATR`), or `RangeEnd` if nothing triggered before the date range ended (forced exit), or `SquareOff` for an intraday trade closed at the entry day's close. |
 | `ClosenessScore` | The strategy's own ranking score (0-100) at signal time. |
 | `ProfitRs` | Profit in rupees on the flat ₹100 stake (equivalently, % return). |
 | `Funded` | Whether the portfolio simulation actually had a free slot/capital to take this trade. |
@@ -166,6 +178,9 @@ you can see whether higher scores actually correspond to better outcomes:
 | `MeanProfitRs` | Average profit across trades in this bucket. |
 | `MedianProfitRs` | Median profit (less skewed by outliers than the mean). |
 | `TotalProfitRs` | Sum of all profit in this bucket. |
+| `AvgWinRs` / `AvgLossRs` | Average of the winning / losing trades. Win rate × average win must beat loss rate × average loss by more than your trading costs for the strategy to make money. |
+
+A final `All` row gives the same numbers across every trade.
 
 This is the actual data-driven way to answer "what score should I trust" —
 if the 80-100 bucket doesn't clearly outperform the 40-60 bucket in win rate

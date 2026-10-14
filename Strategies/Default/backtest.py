@@ -24,6 +24,9 @@ Mechanics:
   regenerated exit strategy.
 - Multiple simultaneous trades on the same symbol are allowed - every
   signal opens its own independent trade.
+- rules.md can declare "Direction: Short" (P&L sign flipped) and
+  "Holding: Intraday" (entry day only; anything still open is squared off
+  at that day's close) in its Strategy Metadata - see strategy_runtime.py.
 """
 
 import argparse
@@ -40,9 +43,16 @@ warnings.filterwarnings("ignore")
 import pandas as pd
 
 from historical_universe import members_as_of, symbols_between, universe_info
-from nse_utils import fetch_stock_history, calculate_sector_strength, calculate_market_breadth
+from nse_utils import (
+    adjust_for_splits_and_bonuses,
+    calculate_market_breadth,
+    calculate_momentum_ranks,
+    calculate_sector_strength,
+    fetch_stock_history,
+)
 from backup_utils import declared_strategy_name
 from stats_utils import hash_rules_content
+from strategy_runtime import call_evaluate, strategy_meta
 from constants import (
     BACKTEST_CACHE_DIR,
     BACKTEST_META_PATH,
@@ -158,41 +168,6 @@ def _dedupe_same_day_rows(df):
     return df.sort_index()
 
 
-# Back-adjusts prices for unadjusted stock splits/bonus issues, so a split
-# doesn't look like a fabricated overnight crash to every rule/exit check.
-def _adjust_for_splits_and_bonuses(df, threshold=0.65):
-    """Detect and back-adjust for unadjusted stock splits / bonus issues.
-
-    The NSE history this pipeline fetches is NOT split/bonus-adjusted - a
-    split shows up as a genuine ~50-90% overnight drop in the raw close
-    price with no corresponding move in the stock's actual value. Left as
-    -is, this reads as a catastrophic single-day crash to every rule and
-    exit condition (RSI, ATR, trailing stops), fabricating impossible
-    losses that never happened to a real position.
-
-    Detects a day-over-day close ratio outside [threshold, 1/threshold]
-    (i.e. more than a ~35% move in either direction - far past any
-    realistic single-day move for a Nifty-adjacent large-cap without a
-    circuit-breaker halt) and back-adjusts every prior row's OHLC by that
-    ratio (and volume inversely), the same technique used to build a
-    standard split-adjusted price series.
-    """
-    close = df["close"].values
-    ratios = close[1:] / close[:-1]
-    split_idxs = [i + 1 for i, r in enumerate(ratios) if r < threshold or r > 1 / threshold]
-    if not split_idxs:
-        return df
-
-    df = df.copy()
-    df["volume"] = df["volume"].astype(float)
-    for idx in split_idxs:
-        factor = df["close"].iloc[idx] / df["close"].iloc[idx - 1]
-        price_cols = ["open", "high", "low", "close"]
-        df.iloc[:idx, df.columns.get_indexer(price_cols)] *= factor
-        df.iloc[:idx, df.columns.get_loc("volume")] /= factor
-    return df
-
-
 # Fetches (or loads from cache) one symbol's cleaned-up OHLCV history.
 def _load_symbol_history(symbol, from_date, to_date):
     """Fetch (or load cached) daily history for a symbol, normalized to
@@ -228,7 +203,7 @@ def _load_symbol_history(symbol, from_date, to_date):
     df.index.name = "date"
 
     df = _dedupe_same_day_rows(df)
-    df = _adjust_for_splits_and_bonuses(df)
+    df = adjust_for_splits_and_bonuses(df)
 
     df.to_csv(cache_path)
     return df
@@ -259,9 +234,15 @@ def load_universe_history(universe, start_date, end_date, warmup_days=WARMUP_DAY
     return data
 
 
+def _pnl_pct(entry_price, exit_price, direction):
+    move = (exit_price - entry_price) / entry_price * 100
+    return -move if direction == "Short" else move
+
+
 # Opens a trade the day after a signal fires and resolves its exit via
 # generated_exit_strategy.py, force-closing at range end if nothing fires.
-def _open_and_resolve_trade(symbol, full_df, signal_day, end_date, closeness_score, active_strategy=None):
+def _open_and_resolve_trade(symbol, full_df, signal_day, end_date, closeness_score, active_strategy=None,
+                            direction="Long", intraday=False):
     """Enter at the next trading day's open after signal_day, then hand off
     to generated_exit_strategy.resolve_exit() to decide when to exit.
 
@@ -275,10 +256,18 @@ def _open_and_resolve_trade(symbol, full_df, signal_day, end_date, closeness_sco
     last available close in range, tagged 'RangeEnd'. This guarantee holds
     regardless of what exit_rules.md says, so a regenerated exit strategy
     can never accidentally leave a trade open forever.
+
+    For an intraday strategy ("Holding: Intraday" in rules.md) the exit
+    logic only sees the entry day, and the fallback is that day's close,
+    tagged 'SquareOff' - an MIS position can never be carried overnight.
+    For a short strategy the exit logic decides when/at what price to exit
+    exactly as for a long one; only the P&L sign is flipped here.
     """
     future = full_df[(full_df.index.date > signal_day) & (full_df.index.date <= end_date)]
     if future.empty:
         return None
+    if intraday:
+        future = future.iloc[:1]
 
     entry_date = future.index[0]
     entry_price = float(future["open"].iloc[0])
@@ -297,17 +286,18 @@ def _open_and_resolve_trade(symbol, full_df, signal_day, end_date, closeness_sco
     else:
         exit_date = future.index[-1]
         exit_price = float(future["close"].iloc[-1])
-        exit_reason = "RangeEnd"
+        exit_reason = "SquareOff" if intraday else "RangeEnd"
 
     # pd.Timestamp is itself a subclass of datetime.date (via datetime.datetime),
     # so a plain isinstance check can't distinguish them - always normalize
     # through pd.Timestamp(...).date() instead, which is safe for a
     # datetime.date, a datetime.datetime, or a pd.Timestamp alike.
     exit_date = pd.Timestamp(exit_date).date()
-    profit_rs = (exit_price - entry_price) / entry_price * 100  # on a flat Rs.100 stake
+    profit_rs = _pnl_pct(entry_price, exit_price, direction)  # on a flat Rs.100 stake
 
     return {
         "Symbol": symbol,
+        "Direction": direction,
         "SignalDate": signal_day,
         "EntryDate": entry_date.date(),
         "EntryPrice": round(entry_price, 2),
@@ -339,11 +329,12 @@ def _normalize_rule_label(failed_rule):
 
 # What a stock did over a fixed holding period after a given day - used to
 # score near-misses, since they never opened a real trade with exit logic.
-def _forward_return_pct(full_df, signal_day, holding_days=NEAR_MISS_HOLDING_DAYS):
+def _forward_return_pct(full_df, signal_day, holding_days=NEAR_MISS_HOLDING_DAYS, direction="Long", intraday=False):
     """What a stock did after a given day, on the same next-day-open entry
     convention as a real trade - used to score near-misses (see below)
     against a fixed holding period, not the exit strategy (a near-miss
-    never opened a real trade, so there's no exit logic to run)."""
+    never opened a real trade, so there's no exit logic to run). For an
+    intraday strategy the holding period is the entry day itself."""
     future = full_df[full_df.index.date > signal_day]
     if future.empty:
         return None
@@ -352,9 +343,9 @@ def _forward_return_pct(full_df, signal_day, holding_days=NEAR_MISS_HOLDING_DAYS
     if entry_price == 0:
         return None
 
-    exit_row_idx = min(holding_days - 1, len(future) - 1)
+    exit_row_idx = 0 if intraday else min(holding_days - 1, len(future) - 1)
     exit_price = float(future["close"].iloc[exit_row_idx])
-    return (exit_price - entry_price) / entry_price * 100
+    return _pnl_pct(entry_price, exit_price, direction)
 
 
 # Core simulation loop: walks the date range day by day, evaluates every
@@ -376,6 +367,8 @@ def run_backtest(start_date, end_date, progress_callback=None):
     and the "Missed Opportunities" tab that reads it).
     """
     universe = _backtest_universe(start_date, end_date)
+    meta = strategy_meta(_read_if_exists(RULES_PATH))
+    direction, intraday = meta["direction"], meta["intraday"]
 
     data = load_universe_history(universe, start_date, end_date)
     if not data:
@@ -425,17 +418,21 @@ def run_backtest(start_date, end_date, progress_callback=None):
 
         sector_ranks_today = calculate_sector_strength(snapshot, universe)
         market_breadth_today = calculate_market_breadth(snapshot)
+        momentum_ranks_today = calculate_momentum_ranks(snapshot)
 
         for symbol, df_slice in snapshot.items():
             try:
-                result = generated_rules.evaluate_stock(symbol, df_slice, universe, sector_ranks_today, market_breadth_today)
+                result = call_evaluate(
+                    generated_rules.evaluate_stock, symbol, df_slice, universe,
+                    sector_ranks_today, market_breadth_today, momentum_ranks_today,
+                )
             except Exception:
                 continue
 
             if not result.get("Passed"):
                 failed_rules = result.get("FailedRules", [])
                 if len(failed_rules) == 1:
-                    forward_return = _forward_return_pct(data[symbol], day)
+                    forward_return = _forward_return_pct(data[symbol], day, direction=direction, intraday=intraday)
                     if forward_return is not None:
                         near_misses.append({
                             "Date": day,
@@ -450,12 +447,13 @@ def run_backtest(start_date, end_date, progress_callback=None):
             trade = _open_and_resolve_trade(
                 symbol, data[symbol], day, end_date, result.get("ClosenessScore", 0.0),
                 active_strategy=result.get("Details", {}).get("Active Strategy"),
+                direction=direction, intraday=intraday,
             )
             if trade:
                 trades.append(trade)
 
     trade_columns = [
-        "Symbol", "SignalDate", "EntryDate", "EntryPrice",
+        "Symbol", "Direction", "SignalDate", "EntryDate", "EntryPrice",
         "ExitDate", "ExitPrice", "ExitReason", "ClosenessScore", "ProfitRs",
         "Active Strategy",
     ]
@@ -561,8 +559,12 @@ def simulate_portfolio(trades_df, initial_capital=100000.0, max_concurrent_posit
 
 # Buckets trades by ClosenessScore and reports win rate/profit per bucket.
 def summarize_trades(trades_df):
-    """Bucket trades by ClosenessScore and report win rate / profit per bucket."""
-    columns = ["ScoreBucket", "Trades", "WinRatePct", "MeanProfitRs", "MedianProfitRs", "TotalProfitRs"]
+    """Bucket trades by ClosenessScore and report win rate / profit per
+    bucket, plus an "All" row. AvgWinRs / AvgLossRs (mean of winning and
+    losing trades) give the expectancy picture: a strategy is only
+    profitable if WinRate x AvgWin beats LossRate x |AvgLoss| by more than
+    its trading costs."""
+    columns = ["ScoreBucket", "Trades", "WinRatePct", "MeanProfitRs", "MedianProfitRs", "TotalProfitRs", "AvgWinRs", "AvgLossRs"]
     if trades_df.empty:
         return pd.DataFrame(columns=columns)
 
@@ -571,15 +573,23 @@ def summarize_trades(trades_df):
     trades_df = trades_df.copy()
     trades_df["ScoreBucket"] = pd.cut(trades_df["ClosenessScore"], bins=bins, labels=labels, include_lowest=True)
 
-    summary = trades_df.groupby("ScoreBucket", observed=True).agg(
+    def _avg(s):
+        return round(s.mean(), 2) if len(s) else None
+
+    aggregations = dict(
         Trades=("ProfitRs", "count"),
         WinRatePct=("ProfitRs", lambda s: round((s > 0).mean() * 100, 1)),
         MeanProfitRs=("ProfitRs", lambda s: round(s.mean(), 2)),
         MedianProfitRs=("ProfitRs", lambda s: round(s.median(), 2)),
         TotalProfitRs=("ProfitRs", lambda s: round(s.sum(), 2)),
-    ).reset_index()
+        AvgWinRs=("ProfitRs", lambda s: _avg(s[s > 0])),
+        AvgLossRs=("ProfitRs", lambda s: _avg(s[s <= 0])),
+    )
+    summary = trades_df.groupby("ScoreBucket", observed=True).agg(**aggregations).reset_index()
+    summary["ScoreBucket"] = summary["ScoreBucket"].astype(str)
+    overall = trades_df.assign(ScoreBucket="All").groupby("ScoreBucket").agg(**aggregations).reset_index()
 
-    return summary
+    return pd.concat([summary, overall], ignore_index=True)[columns]
 
 
 # Parses a "YYYY-MM-DD" CLI argument into a date object.

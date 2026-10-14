@@ -4,6 +4,7 @@ import { multiStrategyApi, type MultiStrategyRun, type MultiStrategyOption, type
 
 const VERDICT_LABEL: Record<StrategyVerdict, string> = {
   buy: 'Buy signal',
+  short: 'Short signal',
   near: 'Near miss',
   none: 'No signal',
   error: 'Could not run',
@@ -11,6 +12,7 @@ const VERDICT_LABEL: Record<StrategyVerdict, string> = {
 
 const VERDICT_PILL: Record<StrategyVerdict, string> = {
   buy: 'border-accent-softBorder bg-accent-soft text-accent',
+  short: 'border-rose-200 bg-rose-50 text-rose-700',
   near: 'border-amber-200 bg-amber-50 text-amber-800',
   none: 'border-gray-200 bg-gray-100 text-gray-600',
   error: 'border-red-200 bg-red-50 text-red-700',
@@ -246,11 +248,14 @@ export default function MultiStrategy() {
                   <div className="flex flex-col gap-0.5">
                     <span className="text-[11px] font-bold uppercase tracking-wide text-gray-500">Agreement</span>
                     <span className="text-lg font-extrabold tracking-tight text-accent">
-                      {count('buy')} of {ran} strategies signal
+                      {count('buy') + count('short')} of {ran} strategies signal
                     </span>
                   </div>
                   <div className="ml-auto flex flex-wrap gap-2 text-[12.5px] font-bold">
-                    <span className={`rounded-full border px-3 py-1.5 ${VERDICT_PILL.buy}`}>{count('buy')} signal</span>
+                    <span className={`rounded-full border px-3 py-1.5 ${VERDICT_PILL.buy}`}>{count('buy')} buy signal</span>
+                    {count('short') > 0 && (
+                      <span className={`rounded-full border px-3 py-1.5 ${VERDICT_PILL.short}`}>{count('short')} short signal</span>
+                    )}
                     <span className={`rounded-full border px-3 py-1.5 ${VERDICT_PILL.near}`}>{count('near')} near miss</span>
                     <span className={`rounded-full border px-3 py-1.5 ${VERDICT_PILL.none}`}>{count('none')} no signal</span>
                   </div>

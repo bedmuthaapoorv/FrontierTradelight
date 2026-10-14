@@ -25,12 +25,22 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from backup_utils import declared_strategy_name, group_backups, list_backups
 from constants import BACKUP_DIR, DATA_DIR, RULES_PATH, UNIVERSE_CACHE_PATH
-from nse_utils import calculate_market_breadth, calculate_sector_strength, fetch_stock_history
+from nse_utils import (
+    adjust_for_splits_and_bonuses,
+    calculate_market_breadth,
+    calculate_momentum_ranks,
+    calculate_sector_strength,
+    fetch_stock_history,
+)
+from strategy_runtime import call_evaluate, strategy_meta
 
 MULTI_DIR = os.path.join(DATA_DIR, "multi_strategy")
 CODE_DIR = os.path.join(MULTI_DIR, "code")
 CONTEXT_PATH = os.path.join(MULTI_DIR, "market_context.json")
 LIVE_KEY = "__live__"
+# Bump whenever what the context contains or how it's computed changes, so a
+# context cached earlier the same day is rebuilt instead of reused.
+CONTEXT_VERSION = 2
 HISTORY_DAYS = 400
 MIN_ROWS = 60
 # Where each shared/per-strategy phase puts a strategy's progress bar.
@@ -59,7 +69,7 @@ def _prepare_df(raw):
     })
     if "delivery_pct" not in df.columns:
         df["delivery_pct"] = float("nan")
-    return df
+    return adjust_for_splits_and_bonuses(df)
 
 
 def fetch_history(symbol):
@@ -97,11 +107,13 @@ def build_market_context(universe, on_progress=None):
             if df is not None:
                 data[symbol] = df
     context = {
+        "version": CONTEXT_VERSION,
         "date": datetime.date.today().isoformat(),
         "stocks_used": len(data),
         "universe_size": len(universe),
         "sector_ranks": calculate_sector_strength(data, universe),
         "market_breadth": calculate_market_breadth(data),
+        "momentum_ranks": calculate_momentum_ranks(data),
     }
     os.makedirs(MULTI_DIR, exist_ok=True)
     with open(CONTEXT_PATH, "w", encoding="utf-8") as f:
@@ -117,7 +129,9 @@ def read_market_context():
         context = json.loads(_read(CONTEXT_PATH))
     except (OSError, ValueError):
         return None
-    return context if context.get("date") == datetime.date.today().isoformat() else None
+    if context.get("date") != datetime.date.today().isoformat() or context.get("version") != CONTEXT_VERSION:
+        return None
+    return context
 
 
 def get_market_context(universe, refresh=False, on_progress=None):
@@ -215,7 +229,7 @@ def _json_safe(value):
     return str(value)
 
 
-def _run_one(key, symbol, df, universe, sector_ranks, breadth, emit=lambda pct, stage: None):
+def _run_one(key, symbol, df, universe, sector_ranks, breadth, emit=lambda pct, stage: None, momentum_ranks=None):
     try:
         rules = _rules_for_key(key)
         if "## Referenced Strategies" in rules:
@@ -224,16 +238,19 @@ def _run_one(key, symbol, df, universe, sector_ranks, breadth, emit=lambda pct, 
             emit(PCT_COMPILE, "Waiting to compile rules")
         module = _load_module(rules, on_compile=lambda: emit(PCT_COMPILE + 3, "Compiling rules with Gemini"))
         emit(PCT_EVALUATE, "Evaluating rules")
-        result = module.evaluate_stock(symbol, df, universe, sector_ranks, breadth)
+        result = call_evaluate(module.evaluate_stock, symbol, df, universe, sector_ranks, breadth, momentum_ranks)
     except Exception as e:
         return {"key": key, "status": "error", "error": str(e)}
 
     failed = [str(r) for r in result.get("FailedRules", [])]
     passed = bool(result.get("Passed"))
+    direction = strategy_meta(rules)["direction"]
     # Same near-miss definition backtest.py uses: exactly one rule failed.
-    status = "buy" if passed else "near" if len(failed) == 1 else "none"
+    signal = "short" if direction == "Short" else "buy"
+    status = signal if passed else "near" if len(failed) == 1 else "none"
     return {
         "key": key,
+        "direction": direction,
         "status": status,
         "closeness_score": _json_safe(result.get("ClosenessScore")),
         "failed_rules": failed,
@@ -273,7 +290,10 @@ def run_stock_events(symbol, keys, refresh_context=False):
             def run_key(k):
                 def emit(pct, stage):
                     events.put({"type": "progress", "key": k, "pct": pct, "stage": stage})
-                result = _run_one(k, clean, df, universe, context["sector_ranks"], context["market_breadth"], emit)
+                result = _run_one(
+                    k, clean, df, universe, context["sector_ranks"], context["market_breadth"], emit,
+                    momentum_ranks=context.get("momentum_ranks"),
+                )
                 events.put({"type": "progress", "key": k, "pct": 100, "stage": "Done" if result["status"] != "error" else "Failed"})
                 return result
 

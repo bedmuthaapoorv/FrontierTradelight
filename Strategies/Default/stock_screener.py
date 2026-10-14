@@ -7,6 +7,7 @@ import pandas_ta as ta
 # pyrefly: ignore [missing-import]
 from scipy.stats import linregress
 import datetime
+import os
 import random
 import time
 import warnings
@@ -14,8 +15,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 warnings.filterwarnings('ignore')
 
 from universe_fetcher import get_top_stocks_by_sector
-from nse_utils import fetch_stock_history, calculate_sector_strength, calculate_market_breadth
-from constants import REPORT_PATH
+from nse_utils import (
+    adjust_for_splits_and_bonuses,
+    calculate_market_breadth,
+    calculate_momentum_ranks,
+    calculate_sector_strength,
+    fetch_stock_history,
+)
+from constants import REPORT_PATH, RULES_PATH
+from strategy_runtime import call_evaluate, strategy_meta
 
 # 1. Fetch Dynamic Stock Universe by Sector
 print("Initializing Dynamic Stock Universe...")
@@ -53,7 +61,7 @@ def _fetch_one(ticker, from_date, to_date):
     })
     if "delivery_pct" not in df.columns:
         df["delivery_pct"] = float("nan")
-    return ticker, df
+    return ticker, adjust_for_splits_and_bonuses(df)
 
 
 def fetch_data(tickers, days=400, max_workers=FETCH_WORKERS):
@@ -103,7 +111,7 @@ def find_trendline_touches(df):
     
     return touches, distance, slope
 
-def analyze_stocks(data, universe, sector_ranks, market_breadth):
+def analyze_stocks(data, universe, sector_ranks, market_breadth, momentum_ranks=None):
     results = []
 
     import generated_rules
@@ -113,12 +121,14 @@ def analyze_stocks(data, universe, sector_ranks, market_breadth):
             continue
 
         try:
-            result = generated_rules.evaluate_stock(
+            result = call_evaluate(
+                generated_rules.evaluate_stock,
                 symbol,
                 df,
                 universe,
                 sector_ranks,
-                market_breadth
+                market_breadth,
+                momentum_ranks,
             )
 
             if result:
@@ -142,11 +152,18 @@ def main():
     data = fetch_data(tickers)
     sector_ranks = calculate_sector_strength(data, STOCK_UNIVERSE)
     market_breadth = calculate_market_breadth(data)
-    results = analyze_stocks(data, STOCK_UNIVERSE, sector_ranks, market_breadth)
+    momentum_ranks = calculate_momentum_ranks(data)
+    results = analyze_stocks(data, STOCK_UNIVERSE, sector_ranks, market_breadth, momentum_ranks)
 
     if not results:
         print("No results generated.")
         return
+
+    rules_content = ""
+    if os.path.exists(RULES_PATH):
+        with open(RULES_PATH, encoding="utf-8") as f:
+            rules_content = f.read()
+    direction = strategy_meta(rules_content)["direction"]
 
     csv_rows = []
 
@@ -154,6 +171,7 @@ def main():
 
         row = {
             "Symbol": result["Symbol"],
+            "Direction": direction,
             "Passed": result["Passed"],
             "ClosenessScore": round(
                 result["ClosenessScore"],
