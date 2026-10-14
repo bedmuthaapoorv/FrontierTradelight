@@ -589,6 +589,13 @@ def _parse_date(s):
 
 # CLI entry point: parses args, runs the backtest, simulates the portfolio,
 # writes all output CSVs, and records which strategy this run belongs to.
+def _read_if_exists(path):
+    if not os.path.exists(path):
+        return ""
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Backtest the current generated_rules.py strategy using generated_exit_strategy.py for exits."
@@ -627,13 +634,16 @@ def main():
     # backtest being run. The Stats tab must attribute these numbers to
     # the strategy that produced them, not to whatever happens to be
     # loaded in rules.md when it's later viewed.
+    # rules.md / exit_rules.md are gitignored per-user files, so a fresh
+    # checkout may not have them; record an empty name rather than crash
+    # after the whole backtest has already run.
     with open(BACKTEST_META_PATH, "w", encoding="utf-8") as f:
-        rules_content = open(RULES_PATH, encoding="utf-8").read()
+        rules_content = _read_if_exists(RULES_PATH)
         json.dump({
             "strategy_name": declared_strategy_name(rules_content),
             "rules_content_hash": hash_rules_content(rules_content),
             "exit_strategy_name": declared_strategy_name(
-                open(EXIT_RULES_PATH, encoding="utf-8").read(), name_field="Exit Strategy Name"
+                _read_if_exists(EXIT_RULES_PATH), name_field="Exit Strategy Name"
             ),
             "initial_capital": args.initial_capital,
             "start_date": args.start.isoformat(),

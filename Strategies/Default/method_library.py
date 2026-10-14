@@ -6,7 +6,6 @@ Library methods are immutable: save_methods() never overwrites a file, so a
 strategy compiled today keeps behaving the same after the library grows."""
 
 import ast
-import fcntl
 import glob
 import json
 import os
@@ -16,6 +15,32 @@ import subprocess
 import sys
 import tempfile
 from contextlib import contextmanager
+
+if os.name == "nt":
+    import msvcrt
+
+    def _lock_file(f):
+        # LK_LOCK gives up after ~10 s of retries, so keep retrying until
+        # the other process releases the lock, matching flock's blocking wait.
+        f.seek(0)
+        while True:
+            try:
+                msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                return
+            except OSError:
+                continue
+
+    def _unlock_file(f):
+        f.seek(0)
+        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+else:
+    import fcntl
+
+    def _lock_file(f):
+        fcntl.flock(f, fcntl.LOCK_EX)
+
+    def _unlock_file(f):
+        fcntl.flock(f, fcntl.LOCK_UN)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 LIB_DIR = os.path.join(APP_DIR, "common_methods")
@@ -237,11 +262,11 @@ def equivalence_test(code_before, code_after, new_methods):
 @contextmanager
 def _library_lock():
     with open(LOCK_PATH, "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        _lock_file(lock)
         try:
             yield
         finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
+            _unlock_file(lock)
 
 
 def save_methods(new_methods):

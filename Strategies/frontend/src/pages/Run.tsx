@@ -15,6 +15,8 @@ export default function Run() {
   const [step2Log, setStep2Log] = useState<string[]>([])
   const [step2Meta, setStep2Meta] = useState<string | null>(null)
 
+  const [step2Progress, setStep2Progress] = useState<number | null>(null)
+
   const runStep1 = () => {
     setStep1Status('running')
     setStep1Log([])
@@ -32,7 +34,16 @@ export default function Run() {
   const runStep2 = () => {
     setStep2Status('running')
     setStep2Log([])
-    streamJob('/jobs/run-screener', (line) => setStep2Log((prev) => [...prev, line]))
+    setStep2Progress(null)
+    streamJob('/jobs/run-screener', (line) => {
+      const m = line.match(/^__PROGRESS__:(\d+)\/(\d+)/)
+      if (m) {
+        const total = Number(m[2])
+        if (total > 0) setStep2Progress((Number(m[1]) / total) * 100)
+        return
+      }
+      setStep2Log((prev) => [...prev, line])
+    })
       .then((code) => {
         setStep2Status(code === 0 ? 'success' : 'error')
         setStep2Meta(code === 0 ? 'Last run: just now' : `Exited with code ${code}`)
@@ -80,6 +91,7 @@ export default function Run() {
             onRun={runStep2}
             log={step2Log}
             meta={step2Meta}
+            progress={step2Progress}
             showConnector={false}
           />
         </div>

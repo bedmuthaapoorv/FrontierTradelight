@@ -13,6 +13,8 @@ interface PipelineStepProps {
   onRun: () => void
   log: string[]
   meta: string | null
+  /** 0-100 while running; null/undefined shows an indeterminate bar. */
+  progress?: number | null
   /** Whether this step's connector line down to the next step is "done"
    * (drawn green) - only the last step omits a connector. */
   showConnector?: boolean
@@ -32,6 +34,7 @@ export default function PipelineStep({
   onRun,
   log,
   meta,
+  progress = null,
   showConnector = true,
 }: PipelineStepProps) {
   const [logOpen, setLogOpen] = useState(false)
@@ -88,6 +91,29 @@ export default function PipelineStep({
                 {buttonLabel}
               </button>
             </div>
+            {status === 'running' && (
+              <div className="mt-4">
+                <div
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={progress ?? undefined}
+                  className="relative h-1.5 overflow-hidden rounded-full bg-gray-100"
+                >
+                  {progress === null ? (
+                    <div className="absolute inset-y-0 w-1/3 animate-pulse rounded-full bg-accent" />
+                  ) : (
+                    <div
+                      className="h-full rounded-full bg-accent transition-[width] duration-300"
+                      style={{ width: `${progress}%` }}
+                    />
+                  )}
+                </div>
+                {progress !== null && (
+                  <div className="mt-1 text-right text-[11px] text-gray-400">{Math.round(progress)}%</div>
+                )}
+              </div>
+            )}
           </div>
 
           {log.length > 0 && (

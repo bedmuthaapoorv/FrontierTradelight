@@ -70,7 +70,10 @@ def fetch_data(tickers, days=400, max_workers=FETCH_WORKERS):
             executor.submit(_fetch_one, ticker, from_date, to_date): ticker
             for ticker in tickers
         }
-        for future in as_completed(future_to_ticker):
+        total = len(future_to_ticker)
+        for done, future in enumerate(as_completed(future_to_ticker), start=1):
+            # Parsed by the frontend's Run tab to drive its progress bar.
+            print(f"__PROGRESS__:{done}/{total}", flush=True)
             ticker = future_to_ticker[future]
             try:
                 ticker, df = future.result()
