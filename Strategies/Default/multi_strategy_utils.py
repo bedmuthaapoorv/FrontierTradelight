@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from backup_utils import declared_strategy_name, group_backups, list_backups
 from constants import BACKUP_DIR, DATA_DIR, RULES_PATH, UNIVERSE_CACHE_PATH
-from fundamentals import call_evaluate_stock, snapshot as fundamentals_snapshot
+from fundamentals import snapshot as fundamentals_snapshot
 from nse_utils import (
     adjust_for_splits_and_bonuses,
     calculate_market_breadth,

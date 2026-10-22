@@ -14,7 +14,7 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 warnings.filterwarnings('ignore')
 
-from fundamentals import call_evaluate_stock, snapshot as fundamentals_snapshot
+from fundamentals import snapshot as fundamentals_snapshot
 from universe_fetcher import get_top_stocks_by_sector
 from nse_utils import (
     adjust_for_splits_and_bonuses,
@@ -24,7 +24,7 @@ from nse_utils import (
     fetch_stock_history,
 )
 from constants import REPORT_PATH, RULES_PATH
-from strategy_runtime import call_evaluate, strategy_meta
+from strategy_runtime import call_evaluate, strategy_meta, warn_if_fundamentals_missing
 
 # 1. Fetch Dynamic Stock Universe by Sector
 print("Initializing Dynamic Stock Universe...")
@@ -116,6 +116,8 @@ def analyze_stocks(data, universe, sector_ranks, market_breadth, momentum_ranks=
     results = []
 
     import generated_rules
+
+    warn_if_fundamentals_missing(generated_rules.evaluate_stock)
 
     # Live prices are unadjusted, which matches Screener's EPS on today's
     # share count, so today's close gives a consistent P/E.

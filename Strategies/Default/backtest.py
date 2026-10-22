@@ -42,7 +42,7 @@ warnings.filterwarnings("ignore")
 
 import pandas as pd
 
-from fundamentals import call_evaluate_stock, snapshot as fundamentals_snapshot
+from fundamentals import snapshot as fundamentals_snapshot
 from historical_universe import members_as_of, symbols_between, universe_info
 from market_calendar import drop_special_sessions
 from nse_utils import (
@@ -54,7 +54,7 @@ from nse_utils import (
 )
 from backup_utils import declared_strategy_name
 from stats_utils import hash_rules_content
-from strategy_runtime import call_evaluate, strategy_meta
+from strategy_runtime import call_evaluate, strategy_meta, warn_if_fundamentals_missing
 from constants import (
     BACKTEST_CACHE_DIR,
     BACKTEST_META_PATH,
@@ -374,6 +374,7 @@ def run_backtest(start_date, end_date, progress_callback=None):
     universe = _backtest_universe(start_date, end_date)
     meta = strategy_meta(_read_if_exists(RULES_PATH))
     direction, intraday = meta["direction"], meta["intraday"]
+    warn_if_fundamentals_missing(generated_rules.evaluate_stock)
 
     data = load_universe_history(universe, start_date, end_date)
     if not data:
@@ -396,6 +397,8 @@ def run_backtest(start_date, end_date, progress_callback=None):
     trades = []
     near_misses = []
     total_days = len(all_dates)
+    evaluation_errors = 0
+    first_evaluation_error = None
 
     for day_idx, day in enumerate(all_dates):
         if progress_callback:
@@ -436,7 +439,10 @@ def run_backtest(start_date, end_date, progress_callback=None):
                     momentum_ranks=momentum_ranks_today,
                     fundamentals=fundamentals_today,
                 )
-            except Exception:
+            except Exception as e:
+                evaluation_errors += 1
+                if first_evaluation_error is None:
+                    first_evaluation_error = f"{symbol} on {day}: {type(e).__name__}: {e}"
                 continue
 
             if not result.get("Passed"):
@@ -461,6 +467,12 @@ def run_backtest(start_date, end_date, progress_callback=None):
             )
             if trade:
                 trades.append(trade)
+
+    if evaluation_errors:
+        print(
+            f"WARNING: the strategy raised an error on {evaluation_errors} stock-day evaluation(s); "
+            f"those were skipped. First one: {first_evaluation_error}"
+        )
 
     trade_columns = [
         "Symbol", "Direction", "SignalDate", "EntryDate", "EntryPrice",

@@ -116,24 +116,29 @@ def validate_new_method(name, code, existing=None):
 
 
 # Shared by both runners: appends the app dir LAST on sys.path (so the temp
-# copy of common_methods still wins) to reuse fundamentals.snapshot, and
-# passes real point-in-time fundamentals to strategies that accept them.
+# copy of common_methods still wins) to reuse strategy_runtime.call_evaluate
+# and fundamentals.snapshot. Every strategy gets the optional inputs it
+# accepts: real point-in-time fundamentals, and a low synthetic momentum
+# rank so short-side momentum rules are exercised, not just rejected.
 _CALL_HELPER = r'''
-import inspect
 sys.path.append(sys.argv[4])
+from strategy_runtime import call_evaluate
 try:
     from fundamentals import snapshot as _fundamentals_snapshot
 except Exception:
     _fundamentals_snapshot = None
 
-def call_strategy(fn, symbol, df):
-    args = (symbol, df, {symbol: {"Name": symbol, "Sector": "Test"}}, {symbol: 3}, 55.0)
-    if "fundamentals" not in inspect.signature(fn).parameters:
-        return fn(*args)
+def call(fn, symbol, df):
     fundamentals = {}
     if _fundamentals_snapshot is not None:
-        fundamentals = _fundamentals_snapshot({symbol: float(df["close"].iloc[-1])}, df.index[-1].date())
-    return fn(*args, fundamentals=fundamentals)
+        try:
+            fundamentals = _fundamentals_snapshot({symbol: float(df["close"].iloc[-1])}, df.index[-1].date())
+        except Exception:
+            fundamentals = {}
+    return call_evaluate(
+        fn, symbol, df, {symbol: {"Name": symbol, "Sector": "Test"}}, {symbol: 3}, 55.0,
+        momentum_ranks={symbol: 3.0}, fundamentals=fundamentals,
+    )
 '''
 
 _SMOKE_RUNNER = r'''
@@ -143,15 +148,6 @@ import pandas as pd
 cache_dir, n_symbols, n_rows = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 ''' + _CALL_HELPER + r'''
 errors = []
-
-def call(fn, symbol, *args):
-    # Mirrors strategy_runtime.call_evaluate (this runner executes outside
-    # Default/, so it can't import it). A low synthetic momentum rank also
-    # exercises short-side rules, not just their rejection path.
-    params = inspect.signature(fn).parameters
-    if "momentum_ranks" in params or any(p.kind == p.VAR_KEYWORD for p in params.values()):
-        return fn(symbol, *args, momentum_ranks={symbol: 3.0})
-    return fn(symbol, *args)
 try:
     import strategy_under_test as s
 except Exception:
@@ -164,7 +160,7 @@ for path in files[::step][:n_symbols]:
     symbol = os.path.basename(path).split("_")[0]
     df = pd.read_csv(path, parse_dates=["date"], index_col="date").tail(n_rows)
     try:
-        r = call(s.evaluate_stock, symbol, df, {symbol: {"Name": symbol, "Sector": "Test"}}, {symbol: 3}, 55.0)
+        r = call(s.evaluate_stock, symbol, df)
     except Exception as e:
         errors.append(f"{symbol}: raised {type(e).__name__}: {e}")
         continue
@@ -216,20 +212,11 @@ def smoke_test(strategy_code, new_methods):
 
 
 _EQUIV_RUNNER = r'''
-import glob, inspect, json, math, os, sys, traceback
+import glob, json, math, os, sys, traceback
 import pandas as pd
 
 cache_dir, n_symbols, n_rows = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-
-def call(fn, symbol, *args, **kwargs):
-    params = inspect.signature(fn).parameters
-    if "momentum_ranks" in params or "fundamentals" in params or any(p.kind == p.VAR_KEYWORD for p in params.values()):
-        if "momentum_ranks" in params or any(p.kind == p.VAR_KEYWORD for p in params.values()):
-            kwargs["momentum_ranks"] = {symbol: 3.0}
-        if "fundamentals" in params:
-            kwargs["fundamentals"] = {symbol: {"latest_fy": "2024-03-31"}}
-        return fn(symbol, *args, **kwargs)
-    return fn(symbol, *args)
+''' + _CALL_HELPER + r'''
 try:
     import strategy_a as a, strategy_b as b
 except Exception:
@@ -250,7 +237,7 @@ for path in files[::step][:n_symbols]:
     for end in range(len(full), max(n_rows, len(full) - 1500), -60):
         df = full.iloc[:end].tail(n_rows)
         try:
-            ka, kb = key(call(a.evaluate_stock, *args)), key(call(b.evaluate_stock, *args))
+            ka, kb = key(call(a.evaluate_stock, symbol, df)), key(call(b.evaluate_stock, symbol, df))
         except Exception as e:
             diffs.append(f"{symbol}@{df.index[-1].date()}: raised {type(e).__name__}: {e}")
             continue

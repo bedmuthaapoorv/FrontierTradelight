@@ -12,7 +12,6 @@ No network access here - run fetch_fundamentals.py to populate the cache.
 
 import bisect
 import functools
-import inspect
 import math
 import os
 import re
@@ -170,23 +169,6 @@ def _full_years_by_symbol():
         if not full.empty:
             out[symbol] = (full, full["available_from"].tolist())
     return out
-
-
-@functools.lru_cache(maxsize=None)
-def _accepts_fundamentals(fn):
-    try:
-        return "fundamentals" in inspect.signature(fn).parameters
-    except (TypeError, ValueError):
-        return False
-
-
-def call_evaluate_stock(fn, symbol, df, universe, sector_ranks, market_breadth, fundamentals):
-    """Calls a compiled evaluate_stock, passing `fundamentals` only if that
-    strategy was compiled with the parameter - strategies compiled before it
-    existed keep their 5-argument signature and keep working unchanged."""
-    if _accepts_fundamentals(fn):
-        return fn(symbol, df, universe, sector_ranks, market_breadth, fundamentals=fundamentals)
-    return fn(symbol, df, universe, sector_ranks, market_breadth)
 
 
 def load_annual_or_none():
