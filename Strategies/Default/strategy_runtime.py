@@ -41,10 +41,22 @@ def _takes_momentum_ranks(fn):
     return accepts
 
 
-def call_evaluate(fn, symbol, df, universe, sector_ranks, market_breadth, momentum_ranks=None):
-    """Calls a strategy's evaluate_stock, passing momentum_ranks only to
-    strategies compiled after it was added - older compiled strategies take
-    exactly five arguments and keep working unchanged."""
+def _takes_fundamentals(fn):
+    try:
+        params = inspect.signature(fn).parameters
+        return "fundamentals" in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+    except (TypeError, ValueError):
+        return False
+
+
+def call_evaluate(fn, symbol, df, universe, sector_ranks, market_breadth, momentum_ranks=None, fundamentals=None):
+    """Calls a strategy's evaluate_stock, passing momentum_ranks and
+    fundamentals only to strategies compiled after they were added - older
+    compiled strategies take exactly five arguments and keep working
+    unchanged."""
+    kwargs = {}
     if _takes_momentum_ranks(fn):
-        return fn(symbol, df, universe, sector_ranks, market_breadth, momentum_ranks=momentum_ranks)
-    return fn(symbol, df, universe, sector_ranks, market_breadth)
+        kwargs["momentum_ranks"] = momentum_ranks
+    if _takes_fundamentals(fn):
+        kwargs["fundamentals"] = fundamentals
+    return fn(symbol, df, universe, sector_ranks, market_breadth, **kwargs)

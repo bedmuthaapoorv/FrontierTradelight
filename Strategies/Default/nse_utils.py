@@ -5,6 +5,8 @@ warnings.filterwarnings("ignore", category=UserWarning, module="jugaad_data")
 import pandas as pd
 from jugaad_data.nse import stock_df
 
+from market_calendar import drop_special_sessions
+
 
 def fetch_stock_history(symbol, from_date, to_date, series="EQ", retries=3, backoff_seconds=2):
     """Fetch NSE history for a symbol, retrying transient failures (rate
@@ -43,6 +45,9 @@ def fetch_stock_history(symbol, from_date, to_date, series="EQ", retries=3, back
                 # calculations all read this DATE column and inherit the
                 # fix automatically).
                 df["DATE"] = df["DATE"] + pd.Timedelta(days=1)
+                # Muhurat/special sessions aren't full trading days - see
+                # market_calendar.SPECIAL_SESSIONS.
+                df = drop_special_sessions(df, date_col="DATE")
             return df
         except Exception as e:
             last_error = e

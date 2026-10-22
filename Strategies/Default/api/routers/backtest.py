@@ -65,6 +65,10 @@ def run_backtest(body: RunRequest):
             cwd=APP_DIR,
             stdout=log_file,
             stderr=subprocess.STDOUT,
+            # Redirected stdout is block-buffered by default, so progress
+            # lines would reach the log (and the UI's progress bar) in
+            # batches minutes apart.
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
         )
     _job["process"] = process
     _job["start_time"] = time.time()

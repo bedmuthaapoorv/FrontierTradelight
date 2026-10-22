@@ -44,6 +44,7 @@ import pandas as pd
 
 from fundamentals import call_evaluate_stock, snapshot as fundamentals_snapshot
 from historical_universe import members_as_of, symbols_between, universe_info
+from market_calendar import drop_special_sessions
 from nse_utils import (
     adjust_for_splits_and_bonuses,
     calculate_market_breadth,
@@ -178,6 +179,9 @@ def _load_symbol_history(symbol, from_date, to_date):
     cache_path = _cache_path(symbol, from_date, to_date)
     if os.path.exists(cache_path):
         cached = pd.read_csv(cache_path, parse_dates=["date"], index_col="date")
+        # Caches written before market_calendar existed still hold the
+        # Muhurat/special-session bars; new fetches drop them upstream.
+        cached = drop_special_sessions(cached)
         if "delivery_pct" not in cached.columns:
             # Cache written before delivery_pct was tracked - treat as
             # unavailable rather than erroring for every rule that reads it.
