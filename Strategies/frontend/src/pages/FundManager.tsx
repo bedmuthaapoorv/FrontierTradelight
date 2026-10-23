@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { fundManagerApi, type FundDocumentRow, type FundHoldingRow, type FundOverview } from '../api'
 
@@ -113,22 +113,94 @@ function buildUpdateGmailUrl(inv: FundOverview['investors'][number], data: FundO
   return `https://mail.google.com/mail/?${params.toString()}`
 }
 
-/** Normalizes a NAV series into an SVG polyline inside a 0..480 x 10..130
- * viewBox - same technique as Backtest.tsx's toPolyline, just local since
- * this view is intentionally standalone from the tabbed app's pages. */
-function toPolyline(values: number[], min: number, max: number): string {
+/** Maps a NAV series into SVG points inside a 0..480 x 10..130 viewBox -
+ * same technique as Backtest.tsx's toPolyline, just local since this view is
+ * intentionally standalone from the tabbed app's pages. */
+function toChartPoints(values: number[], min: number, max: number): { x: number; y: number }[] {
   const w = 430
   const x0 = 30
   const y0 = 10
   const y1 = 130
   const range = max - min || 1
-  return values
-    .map((v, i) => {
-      const x = x0 + (i / Math.max(1, values.length - 1)) * w
-      const y = y1 - ((v - min) / range) * (y1 - y0)
-      return `${x.toFixed(1)},${y.toFixed(1)}`
-    })
-    .join(' ')
+  return values.map((v, i) => ({
+    x: x0 + (i / Math.max(1, values.length - 1)) * w,
+    y: y1 - ((v - min) / range) * (y1 - y0),
+  }))
+}
+
+/** NAV line with a hover readout (date, NAV, AUM) for the nearest recorded point. */
+function NavHistoryChart({ history }: { history: FundOverview['nav_history'] }) {
+  const svgRef = useRef<SVGSVGElement>(null)
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const [hover, setHover] = useState<{ i: number; left: number; top: number } | null>(null)
+
+  const values = history.map((p) => p.nav)
+  const points = toChartPoints(values, Math.min(...values), Math.max(...values))
+
+  const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    const svg = svgRef.current
+    const wrap = wrapRef.current
+    const ctm = svg?.getScreenCTM()
+    if (!svg || !wrap || !ctm) return
+    // Pointer -> viewBox x, so the nearest point is right regardless of how the SVG is scaled.
+    const vx = (e.clientX - ctm.e) / ctm.a
+    let i = 0
+    for (let k = 1; k < points.length; k++) if (Math.abs(points[k].x - vx) < Math.abs(points[i].x - vx)) i = k
+    const wr = wrap.getBoundingClientRect()
+    setHover({ i, left: points[i].x * ctm.a + ctm.e - wr.left, top: points[i].y * ctm.d + ctm.f - wr.top })
+  }
+
+  const hp = hover ? history[hover.i] : null
+  const wrapWidth = wrapRef.current?.clientWidth ?? 0
+
+  return (
+    <>
+      <div ref={wrapRef} className="relative">
+        <svg
+          ref={svgRef}
+          viewBox="0 0 480 140"
+          width="100%"
+          height="140"
+          style={{ display: 'block' }}
+          onPointerMove={onMove}
+          onPointerDown={onMove}
+          onPointerLeave={() => setHover(null)}
+        >
+          <line x1="30" y1="10" x2="30" y2="130" stroke="#EEEEF0" strokeWidth="1" />
+          <line x1="30" y1="130" x2="460" y2="130" stroke="#EEEEF0" strokeWidth="1" />
+          <polyline
+            points={points.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')}
+            fill="none"
+            stroke="#3D5944"
+            strokeWidth="2.25"
+          />
+          {hover && (
+            <g pointerEvents="none">
+              <line x1={points[hover.i].x} y1="10" x2={points[hover.i].x} y2="130" stroke="#9CA3AF" strokeWidth="1" strokeDasharray="3 3" />
+              <circle cx={points[hover.i].x} cy={points[hover.i].y} r="4" fill="#3D5944" stroke="#fff" strokeWidth="1.5" />
+            </g>
+          )}
+        </svg>
+        {hover && hp && (
+          <div
+            className="pointer-events-none absolute z-10 whitespace-nowrap rounded-lg border border-gray-200 bg-white px-3 py-2 shadow-md"
+            style={{
+              left: Math.min(Math.max(hover.left - 80, 0), Math.max(0, wrapWidth - 160)),
+              top: hover.top > 70 ? hover.top - 78 : hover.top + 12,
+            }}
+          >
+            <div className="text-[11px] text-gray-400">{hp.date}</div>
+            <div className="font-mono text-[12.5px] font-bold text-accent">NAV {hp.nav.toFixed(4)}</div>
+            <div className="font-mono text-[11.5px] text-gray-700">AUM {formatMoney(hp.aum)}</div>
+          </div>
+        )}
+      </div>
+      <div className="mt-1.5 flex justify-between px-0.5">
+        <span className="text-[11px] text-gray-400">{history[0]?.date}</span>
+        <span className="font-mono text-[11px] font-bold text-accent">{history[history.length - 1]?.nav.toFixed(4)} today</span>
+      </div>
+    </>
+  )
 }
 
 function AddCapitalEventForm({ investors, onAdded, onCancel }: { investors: FundOverview['investors']; onAdded: () => void; onCancel: () => void }) {
@@ -340,10 +412,6 @@ function OverviewTab({ data, onNavCalculated }: { data: FundOverview; onNavCalcu
       .finally(() => setCalculating(false))
   }
 
-  const navValues = data.nav_history.map((p) => p.nav)
-  const navMin = navValues.length ? Math.min(...navValues) : 99
-  const navMax = navValues.length ? Math.max(...navValues) : 101
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
       {/* Fund overview */}
@@ -413,20 +481,8 @@ function OverviewTab({ data, onNavCalculated }: { data: FundOverview; onNavCalcu
       <div className="grid grid-cols-[1.3fr_1fr] items-start gap-4">
         <div className="rounded-[14px] border border-gray-200 bg-white p-5 shadow-[0_1px_2px_rgba(16,24,40,0.03)]">
           <div className="mb-3 text-[15px] font-extrabold">NAV history</div>
-          {navValues.length > 1 ? (
-            <>
-              <svg viewBox="0 0 480 140" width="100%" height="140" style={{ display: 'block' }}>
-                <line x1="30" y1="10" x2="30" y2="130" stroke="#EEEEF0" strokeWidth="1" />
-                <line x1="30" y1="130" x2="460" y2="130" stroke="#EEEEF0" strokeWidth="1" />
-                <polyline points={toPolyline(navValues, navMin, navMax)} fill="none" stroke="#3D5944" strokeWidth="2.25" />
-              </svg>
-              <div className="mt-1.5 flex justify-between px-0.5">
-                <span className="text-[11px] text-gray-400">{data.nav_history[0]?.date}</span>
-                <span className="font-mono text-[11px] font-bold text-accent">
-                  {data.nav_history[data.nav_history.length - 1]?.nav.toFixed(4)} today
-                </span>
-              </div>
-            </>
+          {data.nav_history.length > 1 ? (
+            <NavHistoryChart history={data.nav_history} />
           ) : (
             <p className="py-8 text-center text-sm text-gray-400">No NAV recorded yet.</p>
           )}

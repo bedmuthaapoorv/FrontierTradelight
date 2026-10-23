@@ -7,12 +7,13 @@ import pandas_ta as ta
 # pyrefly: ignore [missing-import]
 from scipy.stats import linregress
 import datetime
+import json
 import warnings
 warnings.filterwarnings('ignore')
 
 from universe_fetcher import get_top_stocks_by_sector
 from market_data import fetch_bars_batch, calculate_sector_strength, calculate_market_breadth
-from constants import REPORT_PATH
+from constants import MARKET_BREADTH_PATH, REPORT_PATH
 
 # 1. Fetch Dynamic Stock Universe by Sector
 print("Initializing Dynamic Stock Universe...")
@@ -110,11 +111,19 @@ def analyze_stocks(data, universe, sector_ranks, market_breadth):
 
     return results
 
+def save_market_breadth(breadth, stocks):
+    """Persist the latest breadth reading so the UI header can show it
+    without refetching the whole universe."""
+    with open(MARKET_BREADTH_PATH, "w", encoding="utf-8") as f:
+        json.dump({"breadth": round(breadth, 1), "stocks": stocks, "as_of": datetime.datetime.now().isoformat(timespec="seconds")}, f)
+
+
 def main():
     tickers = list(STOCK_UNIVERSE.keys())
     data = fetch_data(tickers)
     sector_ranks = calculate_sector_strength(data, STOCK_UNIVERSE)
     market_breadth = calculate_market_breadth(data)
+    save_market_breadth(market_breadth, len(data))
     results = analyze_stocks(data, STOCK_UNIVERSE, sector_ranks, market_breadth)
 
     if not results:

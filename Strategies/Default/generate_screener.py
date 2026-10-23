@@ -49,16 +49,9 @@ breadth filter, implement it using this parameter directly - do not attempt
 to compute breadth yourself from `df` (a single stock's own data cannot
 tell you about the whole market).
 
-<<<<<<< Updated upstream
-The generated signature is exactly
-`evaluate_stock(symbol, df, universe, sector_ranks, market_breadth, momentum_ranks=None, fundamentals=None)`
-- always keep BOTH optional parameters, even if the rules use neither, and
-never reassign or shadow them (e.g. `momentum_ranks = None`).
-=======
 Always use exactly that signature, with both optional parameters, even if
 RULES use only one of them (or neither).
 
->>>>>>> Stashed changes
 `momentum_ranks` maps symbol -> this stock's cross-sectional "12-1"
 momentum percentile (float in (0, 100], 100 = strongest, near 0 =
 weakest): its return from 252 trading days ago to 21 trading days ago,
@@ -408,15 +401,6 @@ def _library_imports(code):
 
 
 EVALUATE_STOCK_ARGS = ["symbol", "df", "universe", "sector_ranks", "market_breadth", "momentum_ranks", "fundamentals"]
-<<<<<<< Updated upstream
-
-
-def _check_signature(tree):
-    """Rejects an evaluate_stock that doesn't take exactly the six expected
-    parameters with momentum_ranks=None and fundamentals=None - callers pass
-    them by keyword, so a missing or misnamed parameter would otherwise only
-    fail at run time."""
-=======
 EVALUATE_STOCK_SIGNATURE = (
     "def evaluate_stock(symbol, df, universe, sector_ranks, market_breadth, momentum_ranks=None, fundamentals=None)"
 )
@@ -427,7 +411,6 @@ def _check_signature(tree):
     parameters, with both optional inputs defaulting to None - callers pass
     those by keyword, so a missing or misnamed parameter would otherwise
     only fail at run time."""
->>>>>>> Stashed changes
     funcs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "evaluate_stock"]
     if not funcs:
         return "strategy_code does not define a top-level evaluate_stock function"
@@ -437,14 +420,7 @@ def _check_signature(tree):
         isinstance(d, ast.Constant) and d.value is None for d in args.defaults
     )
     if names != EVALUATE_STOCK_ARGS or not defaults_ok or args.vararg or args.kwarg or args.kwonlyargs:
-<<<<<<< Updated upstream
-        return (
-            "evaluate_stock must have exactly this signature: "
-            "def evaluate_stock(symbol, df, universe, sector_ranks, market_breadth, momentum_ranks=None, fundamentals=None)"
-        )
-=======
         return f"evaluate_stock must have exactly this signature: {EVALUATE_STOCK_SIGNATURE}"
->>>>>>> Stashed changes
     return None
 
 
@@ -746,14 +722,8 @@ def evaluate_stock(symbol, df, universe, sector_ranks, market_breadth, momentum_
     except Exception:
         active_key = _FALLBACK_KEY
 
-<<<<<<< Updated upstream
-    sub = _STRATEGIES[active_key].evaluate_stock
-    result = _call_evaluate(
-        sub, symbol, df, universe, sector_ranks, market_breadth,
-=======
     result = _call_evaluate(
         _STRATEGIES[active_key].evaluate_stock, symbol, df, universe, sector_ranks, market_breadth,
->>>>>>> Stashed changes
         momentum_ranks=momentum_ranks, fundamentals=fundamentals,
     )
     result.setdefault("Details", {{}})["Active Strategy"] = active_key

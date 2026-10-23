@@ -291,6 +291,7 @@ export const statsApi = {
 export interface FundNavPoint {
   date: string
   nav: number
+  aum: number
 }
 
 export interface FundCapitalEvent {

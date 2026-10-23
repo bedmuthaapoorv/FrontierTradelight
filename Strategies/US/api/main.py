@@ -24,6 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.routers.backtest import router as backtest_router
 from api.routers.holdings import router as holdings_router
 from api.routers.jobs import router as jobs_router
+from api.routers.market_breadth import router as market_breadth_router
 from api.routers.markdown_files import make_markdown_router
 from api.routers.missed_opportunities import router as missed_opportunities_router
 from api.routers.multi_strategy import router as multi_strategy_router
@@ -61,6 +62,7 @@ app.include_router(holdings_router)
 app.include_router(backtest_router)
 app.include_router(missed_opportunities_router)
 app.include_router(stats_router)
+app.include_router(market_breadth_router)
 app.include_router(multi_strategy_router)
 
 # Vite picks the next free port (5173, 5174, ...) if 5173 is already

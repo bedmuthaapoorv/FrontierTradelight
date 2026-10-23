@@ -35,7 +35,8 @@ def get_overview():
         "total_units": total_units,
         "investor_count": len(fm.load_investors()),
         "nav_history": [
-            {"date": row["Date"], "nav": float(row["NAV"])} for _, row in nav_df.iterrows()
+            {"date": row["Date"], "nav": float(row["NAV"]), "aum": float(row["AUM"])}
+            for _, row in nav_df.iterrows()
         ],
         "recent_capital_events": [
             {

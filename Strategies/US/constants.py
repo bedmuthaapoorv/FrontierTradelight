@@ -28,6 +28,7 @@ DATA_DIR = os.path.join(APP_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 REPORT_PATH = os.path.join(DATA_DIR, "stock_report.csv")
+MARKET_BREADTH_PATH = os.path.join(DATA_DIR, "market_breadth.json")
 
 HOLDINGS_PATH = os.path.join(DATA_DIR, "holdings.csv")
 SELL_REPORT_PATH = os.path.join(DATA_DIR, "sell_report.csv")

@@ -76,6 +76,31 @@ function MarketSwitch() {
   )
 }
 
+/** Latest screener-run breadth: % of the universe above its 50-day MA.
+ * Hidden until a screener run has saved a reading. */
+function MarketBreadth() {
+  const [reading, setReading] = useState<{ breadth: number | null; stocks?: number; as_of?: string } | null>(null)
+
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/market-breadth`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then(setReading)
+      .catch(() => setReading(null))
+  }, [])
+
+  if (!reading || reading.breadth == null) return null
+  const tone = reading.breadth >= 60 ? 'text-green-700' : reading.breadth >= 40 ? 'text-amber-600' : 'text-red-600'
+  const asOf = reading.as_of ? new Date(reading.as_of).toLocaleString() : 'unknown'
+  return (
+    <div
+      className="text-xs text-gray-500"
+      title={`% of ${reading.stocks ?? "?"} stocks above their 50-day MA, as of the last screener run (${asOf})`}
+    >
+      Breadth <span className={`font-semibold ${tone}`}>{reading.breadth.toFixed(0)}%</span>
+    </div>
+  )
+}
+
 function BackendStatus() {
   const [health, setHealth] = useState<object | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -145,6 +170,7 @@ function AppShell() {
           <Link to="/fund-manager" className="text-xs font-semibold text-gray-500 no-underline hover:text-gray-900">
             Fund Manager
           </Link>
+          <MarketBreadth />
           <BackendStatus />
         </div>
       </header>
