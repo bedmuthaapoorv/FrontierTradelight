@@ -1,0 +1,10 @@
+{
+  "titleTemplate": "{repo} / {branch}",
+  "folderId": null,
+  "skipBranchesOnCheckout": [
+    "main",
+    "master",
+    "develop"
+  ],
+  "maxDiffBytes": 60000
+}
