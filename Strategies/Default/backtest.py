@@ -284,6 +284,12 @@ def _open_and_resolve_trade(symbol, full_df, signal_day, end_date, closeness_sco
     except Exception:
         exit_result = None
 
+    # An entry condition that can only be checked on the entry day itself
+    # (e.g. "short only if it opens 1% above the signal close") is written
+    # in exit_rules.md as an ExitReason "NoEntry" - the trade never happened.
+    if exit_result is not None and exit_result.get("ExitReason") == "NoEntry":
+        return None
+
     if exit_result is not None:
         exit_date = exit_result["ExitDate"]
         exit_price = float(exit_result["ExitPrice"])

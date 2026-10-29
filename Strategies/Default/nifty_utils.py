@@ -1,14 +1,17 @@
 """Builds a Nifty 50 benchmark curve to compare the backtest's portfolio
 equity against.
 
-Fetches the real Nifty 50 index level itself (via jugaad_data's index_df,
-which wraps NSE's archives.nseindia.com index-history endpoint) and treats
-it exactly like a single stock: normalize its close to 1.0 at the first
-available date, scale by the portfolio's initial capital. This avoids the
-survivorship bias and equal-weight distortion of building a proxy out of
-today's Nifty 50 constituent list applied retroactively (real historical
-constituents/weights aren't reconstructed here - we just use the published
-index level directly).
+Uses NIFTYBEES (the Nippon India Nifty 50 ETF) fetched through the same
+NSE stock-history path as every stock in the backtest. It used to fetch
+the raw index level via jugaad_data's index_df, but that wraps
+niftyindices.com's history endpoint, which now redirects to a login page
+(and NSE's own indicesHistory API is bot-blocked), so it always returned
+None. NIFTYBEES retains the constituents' dividends, so it tracks closer
+to the Nifty 50 total-return index than the price index (roughly +92% vs
++82% over 2021-2025) - a slightly tougher, fairer benchmark. It's treated
+exactly like a single stock: close normalized to 1.0 at the first
+available date, scaled by the portfolio's initial capital - the same
+approach as US/sp500_utils.py with SPY.
 """
 
 import json
@@ -16,34 +19,39 @@ import os
 from datetime import datetime, timedelta
 
 import pandas as pd
-from jugaad_data.nse import index_df
 
 from constants import NIFTY50_CACHE_PATH
+from nse_utils import adjust_for_splits_and_bonuses, fetch_stock_history
 
 CACHE_PATH = NIFTY50_CACHE_PATH
 CACHE_EXPIRY_DAYS = 1
-INDEX_SYMBOL = "NIFTY 50"
+BENCHMARK_SYMBOL = "NIFTYBEES"
 
 
 def build_nifty_50_benchmark(start_date, end_date, initial_capital):
     """Returns a DataFrame (Date, Equity) tracking what initial_capital
-    invested in the real Nifty 50 index on start_date would be worth, or
+    invested in the Nifty 50 (via NIFTYBEES) on start_date would be worth, or
     None if it couldn't be fetched."""
     cached = _read_cache(start_date, end_date, initial_capital)
     if cached is not None:
         return cached
 
     try:
-        df = index_df(symbol=INDEX_SYMBOL, from_date=start_date, to_date=end_date)
+        df = fetch_stock_history(BENCHMARK_SYMBOL, start_date, end_date)
     except Exception:
         return None
 
     if df is None or df.empty:
         return None
 
-    df = df.sort_values("HistoricalDate").set_index("HistoricalDate")
-    df.index = pd.to_datetime(df.index).normalize()
-    close = df["CLOSE"]
+    df = df.sort_values("DATE")
+    # Same split/bonus back-adjustment the backtest applies to every stock
+    # (NIFTYBEES itself split 1:10 in Dec 2019).
+    ohlcv = df.rename(columns={
+        "OPEN": "open", "HIGH": "high", "LOW": "low", "CLOSE": "close", "VOLUME": "volume",
+    })[["open", "high", "low", "close", "volume"]]
+    ohlcv.index = pd.to_datetime(df["DATE"]).dt.normalize()
+    close = adjust_for_splits_and_bonuses(ohlcv)["close"]
     # jugaad_data's chunked fetches can overlap at boundaries, producing
     # duplicate dates - keep the last value.
     close = close[~close.index.duplicated(keep="last")].dropna()

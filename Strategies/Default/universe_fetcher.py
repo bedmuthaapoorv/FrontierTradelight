@@ -98,6 +98,8 @@ def get_top_stocks_by_sector(limit_per_sector=50):
         print("Failed to fetch Nifty 500, returning empty universe.")
         return {}
 
+    # NSE lists placeholder instruments (e.g. DUMMYHEG) with no price history.
+    nifty500_df = nifty500_df[~nifty500_df['Symbol'].str.upper().str.startswith("DUMMY")]
     tickers_list = nifty500_df['Symbol'].tolist()
 
     print(f"Fetching 6-month historical data for {len(tickers_list)} stocks...")

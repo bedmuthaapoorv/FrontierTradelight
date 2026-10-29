@@ -3,44 +3,38 @@ import pandas_ta as ta
 
 def resolve_exit(entry_price, entry_date, signal_history_df, future_df):
     try:
-        # Ensure we have enough history for ATR(14)
-        if len(signal_history_df) < 14:
+        if signal_history_df.empty or future_df.empty:
             return None
 
-        # Compute ATR(14) from signal_history_df
-        atr_series = ta.atr(
-            signal_history_df['high'],
-            signal_history_df['low'],
-            signal_history_df['close'],
-            length=14
-        )
-        
-        if atr_series is None or atr_series.empty:
-            return None
-            
-        atr_val = atr_series.iloc[-1]
-        
-        if pd.isna(atr_val):
-            return None
+        signal_date = pd.Timestamp(signal_history_df.index[-1]).date()
+        entry_day = pd.Timestamp(entry_date).date()
+        signal_close = signal_history_df['close'].iloc[-1]
 
-        # Rule 1: Stop-Loss Above Entry
-        # Strategy is SHORT, so SL is entry_price + 1.0 * ATR
-        stop_price = entry_price + (1.0 * atr_val)
-        
-        # future_df contains only the entry day for this intraday strategy
-        entry_day_high = future_df["high"].iloc[0]
-        
-        if entry_day_high >= stop_price:
+        # Rule 0: Entry Condition Not Met
+        # Check if it's the Monday after a weekend (3 days difference)
+        # and if the gap is at least 1%
+        day_diff = (entry_day - signal_date).days
+        if day_diff != 3 or entry_price < (1.01 * signal_close):
             return {
                 "ExitDate": future_df.index[0],
-                "ExitPrice": stop_price,
+                "ExitPrice": entry_price,
+                "ExitReason": "NoEntry"
+            }
+
+        # Rule 1: Stop-Loss Above Entry
+        # Short position: SL at 5% above entry
+        stop = entry_price * 1.05
+        entry_day_high = future_df["high"].iloc[0]
+
+        if entry_day_high >= stop:
+            return {
+                "ExitDate": future_df.index[0],
+                "ExitPrice": stop,
                 "ExitReason": "SL"
             }
 
-        # If no condition triggers, return None. 
-        # The caller handles the end-of-day square-off.
+        # No exit triggered, return None for caller to handle SquareOff
         return None
 
     except Exception:
-        # Return None on any error to ensure robustness
         return None
