@@ -57,8 +57,10 @@ today's (the signal day's) row.
 trading days ago to 21 trading days ago; 100 = strongest, near 0 =
 weakest).
 
-Condition: `momentum_rank` is not None AND `momentum_rank <= 5.0`
-(bottom 5% of the universe).
+Condition: `momentum_rank` is not None AND `momentum_rank <= 3.0`
+(bottom 3% of the universe). This was tightened from 5.0: on a 220-day
+signal log (Dec 2025 - Oct 2026) the 3-5 percentile band was the weakest
+bucket in both halves of the period, and cutting it improved results in both.
 
 ### Rule 2: In a Long-Term Downtrend
 
@@ -88,7 +90,8 @@ Close x Volume is at least Rs 25 crore (use the library method
 Only computed for stocks that pass every rule; 0 otherwise.
 
 - `momentum_score = max(0, 100 - momentum_rank * 20)` (rank 0 -> 100,
-  rank 5 -> 0: the weaker, the better)
+  rank 3 -> 40: the weaker, the better; keep this formula unchanged so the
+  ranking order stays the same)
 - `liquidity_score = min(100, avg_traded_value / 1e9 * 100)` (Rs 100 crore
   or more -> 100)
 - `Rank Score = 0.7 * momentum_score + 0.3 * liquidity_score`
